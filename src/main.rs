@@ -11,21 +11,12 @@ use names::{Kind, Names};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use sval::V;
-use theme::card;
+use theme::{section, Section, gray, semibold, BLUE, GRAY, LABEL, RED};
 
 const MATS: [&str; 7] = ["Gold", "Wood", "Stone", "Iron", "Crystals", "Dust", "Ore"];
 const QUAL: [(i32, &str); 9] = [
     (0, "None"), (1, "Common"), (2, "Uncommon"), (4, "Rare"), (8, "Epic"),
     (16, "Legendary"), (32, "Quest"), (64, "Unique"), (128, "Cursed"),
-];
-const STATS: [(&str, &str); 18] = [
-    ("level", "Level"), ("experience", "Experience"), ("ngp", "NG+"),
-    ("picked-str", "Strength"), ("picked-dex", "Dexterity"), ("picked-int", "Intelligence"),
-    ("picked-vit", "Vitality"), ("picked-foc", "Focus"),
-    ("elixir-str", "Elixir: Strength"), ("elixir-dex", "Elixir: Dexterity"), ("elixir-int", "Elixir: Intelligence"),
-    ("elixir-vit", "Elixir: Vitality"), ("elixir-foc", "Elixir: Focus"),
-    ("bonus-stats", "Unspent stat points"), ("bonus-skills", "Unspent skill points"),
-    ("rerolls-used", "Rerolls used"), ("valor", "Valor"), ("dash-charges", "Dash charges"),
 ];
 
 fn main() {
@@ -44,7 +35,7 @@ fn main() {
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1180.0, 780.0]).with_min_inner_size([900.0, 560.0])
-            .with_title("Heroes of Hammerwatch II - Save Editor"),
+            .with_title("Hammerwatch II Save Editor"),
         ..Default::default()
     };
     let _ = eframe::run_native("hoh2edit", opts, Box::new(|cc| Ok(Box::new(App::new(cc)))));
@@ -55,6 +46,7 @@ enum View {
     Town,
     Hero(usize),
     Raw,
+    Settings,
 }
 
 struct App {
@@ -65,6 +57,7 @@ struct App {
     view: View,
     raw_sel: usize,
     status: (String, bool),
+    status_t: f64,
     names: Option<Names>,
     names_rx: Option<Receiver<Result<Names, String>>>,
     names_dir: Option<PathBuf>,
@@ -164,26 +157,6 @@ fn stamp() -> String {
 
 impl App {
     fn new(cc: &eframe::CreationContext) -> Self {
-        #[cfg(windows)]
-        {
-            // Use Windows' own fonts instead of bundling ~1 MB of font files.
-            let mut f = egui::FontDefinitions::empty();
-            let dir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into());
-            for (n, file) in [("ui", "segoeui.ttf"), ("sym", "seguisym.ttf"), ("emoji", "seguiemj.ttf"), ("mono", "consola.ttf")] {
-                if let Ok(b) = std::fs::read(Path::new(&dir).join("Fonts").join(file)) {
-                    f.font_data.insert(n.into(), std::sync::Arc::new(egui::FontData::from_owned(b)));
-                    for fam in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-                        let list = f.families.entry(fam.clone()).or_default();
-                        if n == "mono" && fam == egui::FontFamily::Monospace {
-                            list.insert(0, n.into());
-                        } else if n != "mono" {
-                            list.push(n.into());
-                        }
-                    }
-                }
-            }
-            cc.egui_ctx.set_fonts(f);
-        }
         theme::apply(&cc.egui_ctx);
         let mut a = App {
             dir: std::env::args().nth(1).filter(|a| Path::new(a).is_dir()).map(PathBuf::from).or_else(find_save_dir).map(|p| p.display().to_string()).unwrap_or_default(),
@@ -193,6 +166,7 @@ impl App {
             view: View::Town,
             raw_sel: 0,
             status: (String::new(), false),
+            status_t: f64::NEG_INFINITY,
             names: None,
             names_rx: None,
             names_dir: None,
@@ -206,6 +180,7 @@ impl App {
 
     fn msg(&mut self, s: impl Into<String>, err: bool) {
         self.status = (s.into(), err);
+        self.status_t = f64::NAN; // stamped with the frame time on next paint
     }
 
     fn scan(&mut self) {
@@ -264,9 +239,6 @@ impl App {
         }
     }
 
-    fn dirty(&self) -> bool {
-        self.save.as_ref().map(|s| s.town.dirty || s.heroes.iter().any(|h| h.data.dirty)).unwrap_or(false)
-    }
 
     /// Zip every .hps in the saves folder into one timestamped archive.
     fn backup_all(&self, label: &str) -> Result<PathBuf, String> {
@@ -342,27 +314,7 @@ impl App {
     }
 }
 
-// ---------------- field helpers ----------------
-
-fn int_edit(ui: &mut Ui, v: &mut V) -> bool {
-    match v {
-        V::Int(i) => ui.add(egui::DragValue::new(i).speed(1.0)).changed(),
-        V::Long(i) => ui.add(egui::DragValue::new(i).speed(1.0)).changed(),
-        V::Float(f) => ui.add(egui::DragValue::new(f).speed(0.01)).changed(),
-        _ => {
-            ui.label("-");
-            false
-        }
-    }
-}
-
-fn max_btn(ui: &mut Ui, v: &mut V, max: i32) -> bool {
-    if ui.small_button("max").on_hover_text(format!("Set to {max}")).clicked() {
-        *v = V::Int(max);
-        return true;
-    }
-    false
-}
+// ---------------- helpers ----------------
 
 fn names_label(n: Option<&Names>, h: i64) -> String {
     match n {
@@ -371,25 +323,109 @@ fn names_label(n: Option<&Names>, h: i64) -> String {
     }
 }
 
-fn weak(s: impl Into<String>) -> RichText {
-    RichText::new(s.into()).color(theme::w(140))
+/// "Pretty Name (id)" -> ("Pretty Name", "id")
+fn split_label(l: &str) -> (String, String) {
+    match l.rsplit_once(" (") {
+        Some((n, id)) => (n.to_string(), id.trim_end_matches(')').to_string()),
+        None => (l.to_string(), String::new()),
+    }
 }
 
-fn picker(ui: &mut Ui, id: &str, names: &Names, kind: Kind, filter: &mut String) -> Option<String> {
+/// "mod_spell_crit_chance" -> "Spell Crit Chance"
+fn pretty_id(s: &str) -> String {
+    if s.contains(' ') || s.starts_with('#') {
+        return s.to_string();
+    }
+    s.trim_start_matches("mod_").split('_').filter(|w| !w.is_empty()).map(|w| {
+        let mut c = w.chars();
+        c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+    }).collect::<Vec<_>>().join(" ")
+}
+
+fn class_style(class: &str) -> (&'static str, Color32) {
+    let c = class.split('_').next().unwrap_or("");
+    match c {
+        "paladin" => ("P", theme::YELLOW),
+        "warlock" => ("W", theme::PURPLE),
+        "wizard" => ("Z", theme::BLUE),
+        "warrior" => ("B", theme::RED),
+        "rogue" => ("R", theme::GREEN),
+        "sorcerer" => ("S", theme::ORANGE),
+        "ranger" => ("H", theme::TEAL),
+        "priest" => ("C", theme::PINK),
+        _ => ("?", theme::GRAY3),
+    }
+}
+
+fn qual_color(q: i32) -> Color32 {
+    match q {
+        1 => LABEL,
+        2 => theme::GREEN,
+        4 => Color32::from_rgb(64, 156, 255),
+        8 => theme::PURPLE,
+        16 => theme::ORANGE,
+        64 => theme::YELLOW,
+        128 => RED,
+        _ => GRAY,
+    }
+}
+
+fn qual_name(q: i32) -> &'static str {
+    QUAL.iter().find(|x| x.0 == q).map(|x| x.1).unwrap_or("?")
+}
+
+/// Number row: label … [Max] [value] [stepper]
+fn num_row(s: &mut Section, label: &str, v: &mut V, step: bool, max: Option<i32>) -> bool {
+    let mut c = false;
+    s.kv(label, |ui| {
+        if step {
+            let d = theme::stepper(ui);
+            if d != 0 {
+                if let V::Int(i) = v {
+                    *i = i.saturating_add(d).max(0);
+                    c = true;
+                }
+            }
+        }
+        c |= match v {
+            V::Int(i) => ui.add(egui::DragValue::new(i).speed(1.0)).changed(),
+            V::Long(i) => ui.add(egui::DragValue::new(i).speed(1.0)).changed(),
+            V::Float(f) => ui.add(egui::DragValue::new(f).speed(0.01)).changed(),
+            _ => {
+                ui.label(gray("—"));
+                false
+            }
+        };
+        if let Some(m) = max {
+            if theme::text_btn(ui, "Max", BLUE, false, true) {
+                *v = V::Int(m);
+                c = true;
+            }
+        }
+    });
+    c
+}
+
+fn picker(s: &mut Section, names: &Names, kind: Kind, filter: &mut String, hint: &str) -> Option<String> {
     let mut picked = None;
-    ui.horizontal(|ui| {
-        ui.label(weak("Add"));
-        ui.add(egui::TextEdit::singleline(filter).hint_text("🔍 Search by name…").desired_width(220.0));
+    s.row(|ui| {
+        theme::search(ui, filter, hint);
     });
     let f = filter.to_lowercase();
     if f.len() >= 2 {
-        egui::ScrollArea::vertical().id_salt(id).max_height(150.0).show(ui, |ui| {
-            for d in names.list(kind).into_iter().filter(|d| d.name.to_lowercase().contains(&f) || d.id.contains(&f)).take(60) {
-                if ui.button(format!("+  {}   {}", d.name, d.id)).clicked() {
+        let list: Vec<_> = names.list(kind).into_iter().filter(|d| d.name.to_lowercase().contains(&f) || d.id.contains(&f)).take(12).collect();
+        if list.is_empty() {
+            s.row(|ui| ui.label(gray("No matches")));
+        }
+        for d in list {
+            s.row(|ui| {
+                let r = ui.add(egui::Button::new(RichText::new(format!("Add {}", d.name)).color(BLUE)).frame(false));
+                ui.label(gray(&d.id).small());
+                if r.clicked() {
                     picked = Some(d.id.clone());
                 }
-            }
-        });
+            });
+        }
     }
     if picked.is_some() {
         filter.clear();
@@ -397,126 +433,118 @@ fn picker(ui: &mut Ui, id: &str, names: &Names, kind: Kind, filter: &mut String)
     picked
 }
 
-fn qual_color(q: i32) -> Color32 {
-    match q {
-        1 => theme::w(220),
-        2 => Color32::from_rgb(48, 209, 88),
-        4 => Color32::from_rgb(64, 156, 255),
-        8 => Color32::from_rgb(191, 90, 242),
-        16 => Color32::from_rgb(255, 159, 10),
-        64 => Color32::from_rgb(255, 214, 10),
-        128 => Color32::from_rgb(255, 69, 58),
-        _ => theme::w(160),
-    }
-}
-
-/// Equipment item: [quality, baseHash, intensity, ilvl, upgrade, colorA, colorB, mods…]
-fn equip_row(ui: &mut Ui, it: &mut V, names: Option<&Names>) -> (bool, bool) {
-    let (mut ch, mut del) = (false, false);
-    let Some(a) = it.arr_mut() else {
-        ui.label(weak(if matches!(it, V::Null) { "— empty slot —" } else { "(non-equipment item)" }));
-        return (false, false);
-    };
-    if a.len() < 5 {
-        ui.label("(unrecognised item)");
-        return (false, false);
-    }
-    ui.horizontal(|ui| {
+/// Equipment list with iOS-style expandable rows.
+/// Item: [quality, baseHash, intensity, ilvl, upgrade, colorA, colorB, mods…]
+fn gear_rows(s: &mut Section, items: &mut Vec<V>, names: Option<&Names>, salt: &str, equipped: bool) -> bool {
+    let mut c = false;
+    let mut kill = None;
+    for (i, it) in items.iter_mut().enumerate() {
+        let Some(a) = it.arr_mut().filter(|a| a.len() >= 5) else {
+            s.row(|ui| ui.label(gray(if matches!(it, V::Null) { "Empty slot" } else { "Unrecognised item" })));
+            continue;
+        };
+        let id = egui::Id::new((salt, i));
+        let open = s.ui.data(|d| d.get_temp::<bool>(id).unwrap_or(false));
         let q = a[0].int().unwrap_or(0) as i32;
-        let name = names_label(names, a[1].int().unwrap_or(0));
-        let (n, id) = name.split_once(" (").map(|(n, i)| (n.to_string(), i.trim_end_matches(')').to_string())).unwrap_or((name.clone(), String::new()));
-        ui.allocate_ui_with_layout(egui::vec2(210.0, 22.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-            ui.set_min_width(210.0);
-            ui.add(egui::Label::new(RichText::new(n).strong().color(qual_color(q))).truncate()).on_hover_text(id);
+        let (name, base) = split_label(&names_label(names, a[1].int().unwrap_or(0)));
+        let mods: Vec<String> = a.iter().skip(7).map(|m| pretty_id(&split_label(&names_label(names, m.int().unwrap_or(0))).0)).collect();
+        let clicked = s.row(|ui| {
+            ui.vertical(|ui| {
+                ui.label(semibold(&name, 15.0).color(qual_color(q)));
+                ui.label(gray(format!("{} · ilvl {} · +{}{}", qual_name(q), a[3].int().unwrap_or(0), a[4].int().unwrap_or(0),
+                    if mods.is_empty() { String::new() } else { format!(" · {} mods", mods.len()) })).size(12.5));
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| theme::chevron(ui, open));
+            let full = egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), ui.min_rect().y_range());
+            theme::click_area(ui, full, id.with("row")).clicked()
         });
-        egui::ComboBox::from_id_salt(ui.next_auto_id())
-            .selected_text(RichText::new(QUAL.iter().find(|x| x.0 == q).map(|x| x.1).unwrap_or("?")).color(qual_color(q)))
-            .width(100.0)
-            .show_ui(ui, |ui| {
-                for (v, n) in QUAL {
-                    if ui.selectable_label(q == v, RichText::new(n).color(qual_color(v))).clicked() {
-                        a[0] = V::Int(v);
-                        ch = true;
+        if clicked {
+            s.ui.data_mut(|d| d.insert_temp(id, !open));
+        }
+        if open {
+            s.kv(gray("    Quality"), |ui| {
+                egui::ComboBox::from_id_salt(id.with("q")).selected_text(RichText::new(qual_name(q)).color(qual_color(q))).show_ui(ui, |ui| {
+                    for (v, n) in QUAL {
+                        if ui.selectable_label(q == v, RichText::new(n).color(qual_color(v))).clicked() {
+                            a[0] = V::Int(v);
+                            c = true;
+                        }
                     }
+                });
+            });
+            c |= num_row(s, "    Item level", &mut a[3], true, None);
+            c |= num_row(s, "    Upgrade level", &mut a[4], true, None);
+            if !mods.is_empty() {
+                s.kv(gray("    Modifiers"), |ui| ui.label(gray(mods.join(", "))));
+            }
+            if !base.is_empty() {
+                s.kv(gray("    Base item"), |ui| ui.label(gray(&base)));
+            }
+            s.row(|ui| {
+                ui.add_space(16.0);
+                if theme::text_btn(ui, if equipped { "Unequip & Delete" } else { "Delete Item" }, RED, false, true) {
+                    kill = Some(i);
                 }
             });
-        ui.label(weak("ilvl"));
-        ch |= int_edit(ui, &mut a[3]);
-        ui.label(weak("upgrade"));
-        ch |= int_edit(ui, &mut a[4]);
-        let mods: Vec<String> = a.iter().skip(7).map(|m| names_label(names, m.int().unwrap_or(0))).collect();
-        let r = ui.label(weak(format!("{} mods", mods.len())));
-        if !mods.is_empty() {
-            r.on_hover_text(mods.join("\n"));
         }
-        if ui.small_button("×").on_hover_text("Remove").clicked() {
-            del = true;
+    }
+    if let Some(i) = kill {
+        if equipped {
+            items[i] = V::Null;
+        } else {
+            items.remove(i);
         }
-    });
-    (ch, del)
+        c = true;
+    }
+    c
 }
 
 // ---------------- views ----------------
 
 fn town_view(ui: &mut Ui, save: &mut Save, names: Option<&Names>) -> bool {
     let mut ch = false;
-    card(ui, None, |ui| {
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("🏰").size(30.0));
-            ui.vertical(|ui| {
-                ui.label(weak("TOWN"));
-                ch |= ui.add(egui::TextEdit::singleline(&mut save.town_name).font(egui::TextStyle::Heading).desired_width(260.0)).changed();
-            });
-        });
+    theme::large_title(ui, "Town", &save.town_name.clone());
+    section(ui, Some("Name"), None, |s| {
+        s.kv("Town name", |ui| ch |= theme::text_field(ui, &mut save.town_name, 260.0).changed());
     });
     if ch {
         save.town.dirty = true;
     }
     let blk = &mut save.town;
     if !blk.editable() {
-        ui.colored_label(theme::BAD, format!("Town data can't be decoded safely: {}", blk.err.clone().unwrap_or_default()));
+        ui.colored_label(RED, format!("Town data can't be decoded safely: {}", blk.err.clone().unwrap_or_default()));
         return ch;
     }
     let t = blk.val.as_mut().unwrap();
     let mut c = false;
-    ui.columns(2, |cols| {
-        card(&mut cols[0], Some("Resources"), |ui| {
-            if let Some(m) = t.get_mut("materials").and_then(|m| m.arr_mut()) {
-                egui::Grid::new("mats").num_columns(3).spacing([14.0, 8.0]).show(ui, |ui| {
-                    for (i, v) in m.iter_mut().enumerate() {
-                        ui.label(MATS.get(i).copied().unwrap_or("?"));
-                        c |= int_edit(ui, v);
-                        c |= max_btn(ui, v, 999_999);
-                        ui.end_row();
-                    }
-                });
+    section(ui, Some("Resources"), Some("Max sets a resource to 999,999."), |s| {
+        if let Some(m) = t.get_mut("materials").and_then(|m| m.arr_mut()) {
+            for (i, v) in m.iter_mut().enumerate() {
+                c |= num_row(s, MATS.get(i).copied().unwrap_or("?"), v, false, Some(999_999));
             }
-        });
-        card(&mut cols[1], Some("Progress"), |ui| {
-            if let Some(v) = t.get_mut("ngp") {
-                ui.horizontal(|ui| {
-                    ui.label("Town NG+");
-                    c |= int_edit(ui, v);
-                });
-            }
-            if let Some(bp) = t.get("blueprints").and_then(|b| b.arr()) {
-                ui.label(format!("Blueprints unlocked: {}", bp.len()));
-            }
-            if let Some(st) = t.get("town-stash").and_then(|s| s.arr()) {
-                let n: usize = st.iter().filter_map(|tab| tab.get("items").and_then(|i| i.arr())).map(|i| i.len()).sum();
-                ui.label(format!("Stash: {} tab(s), {n} item(s)", st.len()));
-            }
-        });
+        }
     });
-    card(ui, Some("Buildings"), |ui| {
+    section(ui, Some("Progress"), None, |s| {
+        if let Some(v) = t.get_mut("ngp") {
+            c |= num_row(s, "New Game+", v, true, None);
+        }
+        if let Some(bp) = t.get("blueprints").and_then(|b| b.arr()) {
+            let n = bp.len();
+            s.kv("Blueprints unlocked", |ui| ui.label(gray(n.to_string())));
+        }
+        if let Some(st) = t.get("town-stash").and_then(|s| s.arr()) {
+            let n: usize = st.iter().filter_map(|tab| tab.get("items").and_then(|i| i.arr())).map(|i| i.len()).sum();
+            let tabs = st.len();
+            s.kv("Town stash", |ui| ui.label(gray(format!("{n} items in {tabs} tab{}", if tabs == 1 { "" } else { "s" }))));
+        }
+    });
+    section(ui, Some("Buildings"), None, |s| {
         if let Some(b) = t.get("buildings").and_then(|b| b.arr()) {
-            ui.horizontal_wrapped(|ui| {
-                for x in b {
-                    let h = x.get("building-def").and_then(|v| v.int()).unwrap_or(0);
-                    let l = names_label(names, h);
-                    theme::pill(ui, l.split(" (").next().unwrap_or(&l), theme::w(220));
-                }
-            });
+            for x in b {
+                let h = x.get("building-def").and_then(|v| v.int()).unwrap_or(0);
+                let (n, _) = split_label(&names_label(names, h));
+                s.kv(n, |ui| ui.label(RichText::new("Built").color(theme::GREEN)));
+            }
         }
     });
     if c {
@@ -527,158 +555,130 @@ fn town_view(ui: &mut Ui, save: &mut Save, names: Option<&Names>) -> bool {
 
 fn hero_view(ui: &mut Ui, blk: &mut Block, names: Option<&Names>, filter: &mut String, filter2: &mut String, in_run: bool) -> bool {
     if !blk.editable() {
-        ui.colored_label(theme::BAD, format!("This hero can't be decoded safely: {}", blk.err.clone().unwrap_or_default()));
+        ui.colored_label(RED, format!("This hero can't be decoded safely: {}", blk.err.clone().unwrap_or_default()));
         return false;
     }
     let h = blk.val.as_mut().unwrap();
     let mut c = false;
     let class = h.get("class").and_then(|v| v.str()).unwrap_or("?").to_string();
-    let class_l = names.map(|n| n.id_label(&class)).unwrap_or(class.clone());
+    let (class_n, _) = split_label(&names.map(|n| n.id_label(&class)).unwrap_or(class.clone()));
     let lvl = h.get("level").and_then(|v| v.int()).unwrap_or(1) as i32;
-    card(ui, None, |ui| {
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("⚔").size(30.0));
-            ui.vertical(|ui| {
-                ui.label(weak(format!("{}  ·  LEVEL {lvl}", class_l.split(" (").next().unwrap_or(&class_l).to_uppercase())));
-                if let Some(V::Str(s)) = h.get_mut("name") {
-                    c |= ui.add(egui::TextEdit::singleline(s).font(egui::TextStyle::Heading).desired_width(260.0)).changed();
-                }
-            });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if let Some(V::Bool(d)) = h.get_mut("dead") {
-                    if *d {
-                        if ui.add(theme::primary("Revive")).clicked() {
-                            *d = false;
-                            c = true;
-                        }
-                        theme::pill(ui, "Dead", theme::BAD);
+    let title = h.get("name").and_then(|v| v.str()).filter(|s| !s.is_empty()).unwrap_or("Empty Hero Slot").to_string();
+    theme::large_title(ui, &title, &format!("{class_n} · Level {lvl}"));
+
+    let footer = if in_run { Some("This hero is mid-run. The game may overwrite changes when the run ends.") } else { None };
+    section(ui, Some("Profile"), footer, |s| {
+        if let Some(V::Str(n)) = h.get_mut("name") {
+            s.kv("Name", |ui| c |= theme::text_field(ui, n, 240.0).changed());
+        }
+        s.kv("Class", |ui| ui.label(gray(&class_n)));
+        if let Some(V::Bool(d)) = h.get_mut("dead") {
+            s.kv("Status", |ui| {
+                if *d {
+                    if theme::filled_btn(ui, "Revive", BLUE) {
+                        *d = false;
+                        c = true;
                     }
-                }
-                if in_run {
-                    theme::pill(ui, "Mid-run: changes may be overwritten when the run ends", theme::WARN);
+                    ui.label(RichText::new("Fallen").color(RED));
+                } else {
+                    ui.label(RichText::new("Alive").color(theme::GREEN));
                 }
             });
-        });
+        }
     });
-    card(ui, Some("Stats & progression"), |ui| {
-        egui::Grid::new("stats").num_columns(4).spacing([16.0, 8.0]).show(ui, |ui| {
-            let mut col = 0;
-            for (k, label) in STATS {
-                if let Some(v) = h.get_mut(k) {
-                    ui.label(label);
-                    c |= int_edit(ui, v);
-                    col += 1;
-                    if col % 2 == 0 {
-                        ui.end_row();
-                    }
-                }
+    section(ui, Some("Progression"), Some("Level and Experience should agree. Raising Experience and letting the game level you up is safest."), |s| {
+        for (k, label) in [("level", "Level"), ("experience", "Experience"), ("ngp", "New Game+"), ("bonus-stats", "Unspent stat points"),
+            ("bonus-skills", "Unspent skill points"), ("rerolls-used", "Rerolls used"), ("dash-charges", "Dash charges"), ("valor", "Valor")] {
+            if let Some(v) = h.get_mut(k) {
+                c |= num_row(s, label, v, k != "experience", None);
             }
-        });
-        ui.add_space(4.0);
-        ui.label(weak("Tip: Level and Experience should agree. Raising Experience and letting the game level you up is safest.").small());
+        }
     });
-    card(ui, Some("Equipped"), |ui| {
+    section(ui, Some("Attributes"), None, |s| {
+        for (k, label) in [("picked-str", "Strength"), ("picked-dex", "Dexterity"), ("picked-int", "Intelligence"), ("picked-vit", "Vitality"), ("picked-foc", "Focus")] {
+            if let Some(v) = h.get_mut(k) {
+                c |= num_row(s, label, v, true, None);
+            }
+        }
+    });
+    section(ui, Some("Elixirs"), None, |s| {
+        for (k, label) in [("elixir-str", "Strength"), ("elixir-dex", "Dexterity"), ("elixir-int", "Intelligence"), ("elixir-vit", "Vitality"), ("elixir-foc", "Focus")] {
+            if let Some(v) = h.get_mut(k) {
+                c |= num_row(s, label, v, true, None);
+            }
+        }
+    });
+    section(ui, Some("Equipped"), Some("Tap an item to edit its quality and levels."), |s| {
         if let Some(a) = h.get_mut("equipped").and_then(|m| m.arr_mut()) {
-            for it in a.iter_mut() {
-                let (ch, del) = equip_row(ui, it, names);
-                c |= ch;
-                if del {
-                    *it = V::Null;
-                    c = true;
-                }
-            }
+            c |= gear_rows(s, a, names, "eq", true);
         }
     });
-    card(ui, Some("Inventory"), |ui| {
-        if !matches!(h.get("equipment"), Some(V::Arr(_))) {
-            if let Some(v) = h.get_mut("equipment") {
-                *v = V::Arr(vec![]);
-            }
+    if !matches!(h.get("equipment"), Some(V::Arr(_))) {
+        if let Some(v) = h.get_mut("equipment") {
+            *v = V::Arr(vec![]);
         }
+    }
+    section(ui, Some("Inventory"), Some("New items are added as Legendary at the hero's level, with no modifiers."), |s| {
         if let Some(a) = h.get_mut("equipment").and_then(|m| m.arr_mut()) {
             if a.is_empty() {
-                ui.label(weak("Inventory is empty."));
+                s.row(|ui| ui.label(gray("No items")));
             }
-            let mut kill = None;
-            for (i, it) in a.iter_mut().enumerate() {
-                let (ch, del) = equip_row(ui, it, names);
-                c |= ch;
-                if del {
-                    kill = Some(i);
-                }
-            }
-            if let Some(i) = kill {
-                a.remove(i);
-                c = true;
-            }
-            ui.add_space(4.0);
+            c |= gear_rows(s, a, names, "inv", false);
             if let Some(n) = names {
-                if let Some(id) = picker(ui, "eqp", n, Kind::Equipment, filter) {
+                if let Some(id) = picker(s, n, Kind::Equipment, filter, "Add equipment") {
                     a.push(V::Arr(vec![V::Int(16), V::Int(hps::hash_string(&id) as i32), V::Float(1.0), V::Int(lvl.max(1)), V::Int(0), V::Int(0), V::Int(0)]));
                     c = true;
                 }
             }
         }
     });
-    ui.columns(2, |cols| {
-        card(&mut cols[0], Some("Trinkets"), |ui| {
-            if !matches!(h.get("trinkets"), Some(V::Arr(_))) {
-                if let Some(v) = h.get_mut("trinkets") {
-                    *v = V::Arr(vec![]);
-                }
-            }
-            if let Some(a) = h.get_mut("trinkets").and_then(|m| m.arr_mut()) {
-                let mut kill = None;
-                for (i, it) in a.iter().enumerate() {
-                    ui.horizontal(|ui| {
-                        let s = it.str().map(|s| names.map(|n| n.id_label(s)).unwrap_or(s.to_string())).unwrap_or_else(|| format!("{it:?}"));
-                        ui.label(s);
-                        if ui.small_button("×").clicked() {
-                            kill = Some(i);
-                        }
-                    });
-                }
-                if a.is_empty() {
-                    ui.label(weak("No trinkets carried."));
-                }
-                if let Some(i) = kill {
-                    a.remove(i);
-                    c = true;
-                }
-                if let Some(n) = names {
-                    if let Some(id) = picker(ui, "trk", n, Kind::Trinket, filter2) {
-                        a.push(V::Str(id));
-                        c = true;
-                    }
-                }
-            }
-        });
-        card(&mut cols[1], Some("Carried materials"), |ui| {
-            if let Some(m) = h.get_mut("materials").and_then(|m| m.arr_mut()) {
-                egui::Grid::new("hmats").num_columns(2).spacing([14.0, 8.0]).show(ui, |ui| {
-                    for (i, v) in m.iter_mut().enumerate() {
-                        ui.label(MATS.get(i).copied().unwrap_or("?"));
-                        c |= int_edit(ui, v);
-                        ui.end_row();
+    if !matches!(h.get("trinkets"), Some(V::Arr(_))) {
+        if let Some(v) = h.get_mut("trinkets") {
+            *v = V::Arr(vec![]);
+        }
+    }
+    section(ui, Some("Trinkets"), None, |s| {
+        if let Some(a) = h.get_mut("trinkets").and_then(|m| m.arr_mut()) {
+            let mut kill = None;
+            for (i, it) in a.iter().enumerate() {
+                let l = it.str().map(|x| names.map(|n| n.id_label(x)).unwrap_or(x.to_string())).unwrap_or_else(|| format!("{it:?}"));
+                let (n, _) = split_label(&l);
+                s.kv(n, |ui| {
+                    if theme::text_btn(ui, "Remove", RED, false, true) {
+                        kill = Some(i);
                     }
                 });
-            } else {
-                ui.label(weak("None"));
             }
-        });
-    });
-    card(ui, Some("Skills"), |ui| {
-        if let Some(V::Dict(d)) = h.get_mut("picked-skills") {
-            egui::Grid::new("skills").num_columns(4).spacing([16.0, 8.0]).show(ui, |ui| {
-                for (i, (k, v)) in d.iter_mut().enumerate() {
-                    let l = names.map(|n| n.id_label(k)).unwrap_or(k.clone());
-                    ui.label(l.split(" (").next().unwrap_or(&l).to_string()).on_hover_text(k.as_str());
-                    c |= int_edit(ui, v);
-                    if i % 2 == 1 {
-                        ui.end_row();
-                    }
+            if a.is_empty() {
+                s.row(|ui| ui.label(gray("No trinkets")));
+            }
+            if let Some(i) = kill {
+                a.remove(i);
+                c = true;
+            }
+            if let Some(n) = names {
+                if let Some(id) = picker(s, n, Kind::Trinket, filter2, "Add trinket") {
+                    a.push(V::Str(id));
+                    c = true;
                 }
-            });
+            }
+        }
+    });
+    section(ui, Some("Carried materials"), None, |s| {
+        if let Some(m) = h.get_mut("materials").and_then(|m| m.arr_mut()) {
+            for (i, v) in m.iter_mut().enumerate() {
+                c |= num_row(s, MATS.get(i).copied().unwrap_or("?"), v, false, None);
+            }
+        } else {
+            s.row(|ui| ui.label(gray("None")));
+        }
+    });
+    section(ui, Some("Skills"), None, |s| {
+        if let Some(V::Dict(d)) = h.get_mut("picked-skills") {
+            for (k, v) in d.iter_mut() {
+                let (n, _) = split_label(&names.map(|n| n.id_label(k)).unwrap_or(k.clone()));
+                c |= num_row(s, &n, v, true, None);
+            }
         }
     });
     if c {
@@ -687,7 +687,7 @@ fn hero_view(ui: &mut Ui, blk: &mut Block, names: Option<&Names>, filter: &mut S
     c
 }
 
-/// Generic tree editor for anything the friendly tabs don't cover.
+/// Generic tree editor for anything the friendly views don't cover.
 fn raw_tree(ui: &mut Ui, label: &str, v: &mut V, names: Option<&Names>, depth: usize) -> bool {
     let mut c = false;
     match v {
@@ -703,7 +703,7 @@ fn raw_tree(ui: &mut Ui, label: &str, v: &mut V, names: Option<&Names>, depth: u
                 let mut kill = None;
                 for (i, x) in a.iter_mut().enumerate() {
                     ui.horizontal(|ui| {
-                        if ui.small_button("×").on_hover_text("Delete element").clicked() {
+                        if ui.add(egui::Button::new(RichText::new("−").color(RED)).frame(false)).on_hover_text("Delete element").clicked() {
                             kill = Some(i);
                         }
                         ui.vertical(|ui| c |= raw_tree(ui, &format!("[{i}]"), x, names, depth + 1));
@@ -719,14 +719,14 @@ fn raw_tree(ui: &mut Ui, label: &str, v: &mut V, names: Option<&Names>, depth: u
             ui.horizontal(|ui| {
                 ui.label(label);
                 match v {
-                    V::Bool(b) => c |= ui.checkbox(b, "").changed(),
+                    V::Bool(b) => c |= theme::switch(ui, b).changed(),
                     V::Int(i) => {
                         c |= ui.add(egui::DragValue::new(i)).changed();
                         if i.unsigned_abs() > 100_000 {
                             if let Some(n) = names {
                                 let l = n.label(*i as u32);
                                 if !l.starts_with('#') {
-                                    ui.label(weak(l));
+                                    ui.label(gray(l));
                                 }
                             }
                         }
@@ -739,7 +739,7 @@ fn raw_tree(ui: &mut Ui, label: &str, v: &mut V, names: Option<&Names>, depth: u
                     V::Vec3(a) => a.iter_mut().for_each(|x| c |= ui.add(egui::DragValue::new(x)).changed()),
                     V::Vec4(a) => a.iter_mut().for_each(|x| c |= ui.add(egui::DragValue::new(x)).changed()),
                     other => {
-                        ui.label(weak(other.kind()));
+                        ui.label(gray(other.kind()));
                     }
                 }
             });
@@ -748,13 +748,41 @@ fn raw_tree(ui: &mut Ui, label: &str, v: &mut V, names: Option<&Names>, depth: u
     c
 }
 
+/// iPadOS sidebar row. Returns true when tapped.
+fn side_item(ui: &mut Ui, sel: bool, glyph: &str, col: Color32, title: &str, trailing: &str) -> bool {
+    let fill = if sel { BLUE } else { Color32::TRANSPARENT };
+    let r = egui::Frame::new().fill(fill).corner_radius(egui::CornerRadius::same(10)).inner_margin(egui::Margin::symmetric(8, 6)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            theme::tile(ui, glyph, if sel { col.gamma_multiply(0.9) } else { col });
+            ui.add(egui::Label::new(RichText::new(title).size(15.0).color(LABEL)).truncate());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(RichText::new(trailing).size(13.5).color(if sel { LABEL.gamma_multiply(0.85) } else { GRAY }));
+            });
+        });
+    });
+    let resp = theme::click_area(ui, r.response.rect, ui.id().with(("side", title, glyph)));
+    if resp.hovered() && !sel {
+        ui.painter().rect_filled(r.response.rect, 10.0, Color32::from_white_alpha(10));
+    }
+    resp.clicked()
+}
+
+fn side_header(ui: &mut Ui, t: &str) {
+    ui.add_space(10.0);
+    ui.horizontal(|ui| {
+        ui.add_space(10.0);
+        ui.label(semibold(t, 13.0).color(GRAY));
+    });
+    ui.add_space(2.0);
+}
+
 impl eframe::App for App {
     fn clear_color(&self, _v: &egui::Visuals) -> [f32; 4] {
-        [0.035, 0.04, 0.063, 1.0]
+        [0.0, 0.0, 0.0, 1.0]
     }
 
     fn update(&mut self, ctx: &egui::Context, _f: &mut eframe::Frame) {
-        theme::background(ctx);
         if let Some(rx) = &self.names_rx {
             if let Ok(r) = rx.try_recv() {
                 match r {
@@ -766,106 +794,272 @@ impl eframe::App for App {
                 ctx.request_repaint_after(std::time::Duration::from_millis(100));
             }
         }
+        let now = ctx.input(|i| i.time);
+        if self.status_t.is_nan() {
+            self.status_t = now;
+        }
 
-        egui::TopBottomPanel::top("top").frame(theme::panel_frame(20)).show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.label(RichText::new("Hammerwatch II").size(20.0).strong().color(theme::w(250)));
-                    ui.label(weak("SAVE EDITOR").small());
+        // ---------- sidebar ----------
+        let names = self.names.as_ref();
+        egui::SidePanel::left("nav")
+            .resizable(false)
+            .exact_width(270.0)
+            .frame(egui::Frame::new().fill(theme::SIDEBAR).inner_margin(egui::Margin { left: 10, right: 10, top: 18, bottom: 10 }))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new("Hammerwatch").font(theme::bold(26.0)).color(LABEL));
+                        ui.label(gray("Save Editor"));
+                    });
                 });
-                ui.add_space(12.0);
-                let r = ui.add(egui::TextEdit::singleline(&mut self.dir).hint_text("Saves folder").desired_width(330.0));
-                if ui.button("Scan").clicked() || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
-                    self.names = None;
-                    self.scan();
-                }
-                let cur = self.file.as_ref().map(|p| p.file_name().unwrap().to_string_lossy().to_string()).unwrap_or_default();
-                let mut pick = None;
-                egui::ComboBox::from_id_salt("slot").selected_text(cur).width(130.0).show_ui(ui, |ui| {
+                ui.add_space(8.0);
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    let Some(save) = self.save.as_ref() else {
+                        if side_item(ui, self.view == View::Settings, "S", theme::GRAY3, "Settings", "") {
+                            self.view = View::Settings;
+                        }
+                        return;
+                    };
+                    if side_item(ui, self.view == View::Town, "T", theme::ORANGE, "Town", if save.town.dirty { "Edited" } else { "" }) {
+                        self.view = View::Town;
+                    }
+                    side_header(ui, "Heroes");
+                    for (i, h) in save.heroes.iter().enumerate() {
+                        let v = h.data.val.as_ref();
+                        let name = v.and_then(|v| v.get("name")).and_then(|n| n.str()).filter(|n| !n.is_empty()).unwrap_or("Empty Slot");
+                        let lvl = v.and_then(|v| v.get("level")).and_then(|n| n.int()).unwrap_or(0);
+                        let class = v.and_then(|v| v.get("class")).and_then(|n| n.str()).unwrap_or("");
+                        let (g, col) = class_style(class);
+                        let trail = if h.data.dirty { "Edited".to_string() } else if lvl > 0 { format!("Lv {lvl}") } else { String::new() };
+                        if side_item(ui, self.view == View::Hero(i), g, col, name, &trail) {
+                            self.view = View::Hero(i);
+                        }
+                    }
+                    side_header(ui, "More");
+                    if side_item(ui, self.view == View::Raw, "{}", theme::INDIGO, "Advanced", "") {
+                        self.view = View::Raw;
+                    }
+                    if side_item(ui, self.view == View::Settings, "S", theme::GRAY3, "Settings", "") {
+                        self.view = View::Settings;
+                    }
+                });
+            });
+
+        // ---------- detail ----------
+        let mut do_save = false;
+        let mut do_discard = false;
+        let mut do_backup = false;
+        let mut pick = None;
+        let filter = &mut self.filter;
+        let filter2 = &mut self.filter2;
+        let raw_sel = &mut self.raw_sel;
+        let dirty = self.save.as_ref().map(|s| s.town.dirty || s.heroes.iter().any(|h| h.data.dirty)).unwrap_or(false);
+        let mut rescan = false;
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::BG).inner_margin(egui::Margin { left: 28, right: 20, top: 12, bottom: 0 })).show(ctx, |ui| {
+            // nav bar
+            ui.horizontal(|ui| {
+                let cur = self.file.as_ref().map(|p| p.file_name().unwrap().to_string_lossy().to_string()).unwrap_or_else(|| "No save".into());
+                egui::ComboBox::from_id_salt("slot").selected_text(RichText::new(cur).color(BLUE)).width(150.0).show_ui(ui, |ui| {
                     for (i, (p, _)) in self.files.iter().enumerate() {
                         let n = p.file_name().unwrap().to_string_lossy().to_string();
-                        let lbl = if i == 0 { format!("{n}  · newest") } else { n };
+                        let lbl = if i == 0 { format!("{n}  (newest)") } else { n };
                         if ui.selectable_label(Some(p) == self.file.as_ref(), lbl).clicked() {
                             pick = Some(p.clone());
                         }
                     }
                 });
-                if let Some(p) = pick {
-                    self.open(p);
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let dirty = self.dirty();
-                    let save_btn = if dirty { theme::primary("Save changes") } else { egui::Button::new("Save changes").corner_radius(egui::CornerRadius::same(255)) };
-                    if ui.add_enabled(dirty, save_btn).clicked() {
-                        self.write();
-                    }
-                    if ui.add_enabled(dirty, egui::Button::new("Discard")).clicked() {
-                        if let Some(p) = self.file.clone() {
-                            self.open(p);
-                        }
-                    }
-                    if ui.button("Backups").on_hover_text("View and restore backups").clicked() {
-                        self.show_backups = !self.show_backups;
-                    }
-                    if ui.button("Back up all").on_hover_text("Zip every save slot into one timestamped backup").clicked() {
-                        match self.backup_all("all_saves") {
-                            Ok(p) => self.msg(format!("Backed up all saves to {}", p.display()), false),
-                            Err(e) => self.msg(format!("Backup failed: {e}"), true),
-                        }
-                    }
-                });
-            });
-            ui.add_space(2.0);
-            ui.horizontal(|ui| {
-                let (s, err) = self.status.clone();
-                if !s.is_empty() {
-                    theme::pill(ui, &s, if err { theme::BAD } else { theme::GOOD });
-                }
                 if self.names_rx.is_some() {
                     ui.spinner();
-                    ui.label(weak("Reading game data…"));
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(weak("Close the game before saving").small());
+                    if theme::text_btn(ui, "Save", BLUE, true, dirty) {
+                        do_save = true;
+                    }
+                    ui.add_space(6.0);
+                    if theme::text_btn(ui, "Discard", RED, false, dirty) {
+                        do_discard = true;
+                    }
+                    ui.add_space(6.0);
+                    if theme::text_btn(ui, "Backups", BLUE, false, true) {
+                        self.show_backups = true;
+                    }
+                    ui.add_space(6.0);
+                    if theme::text_btn(ui, "Back Up All", BLUE, false, true) {
+                        do_backup = true;
+                    }
                 });
             });
-        });
-
-        if self.show_backups {
-            let mut open = true;
-            let mut action: Option<PathBuf> = None;
-            egui::Window::new("Backups").open(&mut open).default_width(520.0).collapsible(false).show(ctx, |ui| {
-                let bdir = backup_dir(Path::new(&self.dir));
-                ui.label(weak(bdir.display().to_string()).small());
-                ui.add_space(4.0);
-                let mut v: Vec<PathBuf> = std::fs::read_dir(&bdir).map(|r| r.flatten().map(|e| e.path()).collect()).unwrap_or_default();
-                v.sort_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok());
-                v.reverse();
-                egui::ScrollArea::vertical().max_height(340.0).show(ui, |ui| {
-                    if v.is_empty() {
-                        ui.label("No backups yet. One is made automatically every time you save, or press “Back up all”.");
-                    }
-                    for p in v {
-                        let is_zip = p.extension().map(|e| e == "zip").unwrap_or(false);
-                        ui.horizontal(|ui| {
-                            theme::pill(ui, if is_zip { "ALL" } else { "SLOT" }, if is_zip { theme::ACCENT } else { theme::w(200) });
-                            ui.label(p.file_name().unwrap().to_string_lossy());
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.button(if is_zip { "Restore all" } else { "Restore" }).clicked() {
-                                    action = Some(p.clone());
+            ui.add_space(6.0);
+            egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
+                ui.set_max_width(ui.available_width().min(860.0));
+                match (self.view, self.save.as_mut()) {
+                    (View::Settings, _) | (_, None) => {
+                        theme::large_title(ui, "Settings", "");
+                        section(ui, Some("Saves folder"), Some("Usually Steam\\userdata\\<your id>\\619820\\remote\\saves. Found automatically."), |s| {
+                            s.row(|ui| {
+                                let r = ui.add(egui::TextEdit::singleline(&mut self.dir).frame(false).desired_width(ui.available_width() - 70.0));
+                                if theme::text_btn(ui, "Scan", BLUE, true, true) || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                                    rescan = true;
                                 }
                             });
                         });
+                        section(ui, Some("Game data"), Some("Item, trinket and skill names are read from the game's own files."), |s| {
+                            let gd = self.names_dir.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "Not found".into());
+                            s.kv("Install", |ui| ui.label(gray(gd)));
+                            let st = if self.names.is_some() { "Loaded" } else if self.names_rx.is_some() { "Loading…" } else { "Unavailable" };
+                            s.kv("Names", |ui| ui.label(gray(st)));
+                        });
+                        section(ui, Some("Backups"), Some("A backup is made automatically before every save."), |s| {
+                            let bd = backup_dir(Path::new(&self.dir)).display().to_string();
+                            s.kv("Location", |ui| ui.add(egui::Label::new(gray(bd)).truncate()));
+                            s.row(|ui| {
+                                if theme::text_btn(ui, "Back Up All Saves Now", BLUE, false, true) {
+                                    do_backup = true;
+                                }
+                            });
+                            s.row(|ui| {
+                                if theme::text_btn(ui, "Show Backups", BLUE, false, true) {
+                                    self.show_backups = true;
+                                }
+                            });
+                        });
+                        section(ui, Some("About"), None, |s| {
+                            s.kv("Version", |ui| ui.label(gray(env!("CARGO_PKG_VERSION"))));
+                            s.kv("Save format", |ui| ui.label(gray("H2SV v4 · LZ4 · MD5")));
+                        });
                     }
-                });
+                    (View::Town, Some(save)) => {
+                        town_view(ui, save, names);
+                    }
+                    (View::Hero(i), Some(save)) => {
+                        if let Some(h) = save.heroes.get_mut(i) {
+                            let run = h.level.is_some();
+                            hero_view(ui, &mut h.data, names, filter, filter2, run);
+                        }
+                    }
+                    (View::Raw, Some(save)) => {
+                        theme::large_title(ui, "Advanced", "Every value in the save, exactly as stored");
+                        section(ui, None, Some("Changes here are applied exactly as typed, so use with care."), |s| {
+                            s.kv("Data", |ui| {
+                                let name_of = |i: usize| -> String {
+                                    if i == 0 {
+                                        "Town".into()
+                                    } else {
+                                        save.heroes.get(i - 1).and_then(|h| h.data.val.as_ref()).and_then(|v| v.get("name")).and_then(|n| n.str()).filter(|n| !n.is_empty()).unwrap_or("Empty slot").to_string()
+                                    }
+                                };
+                                egui::ComboBox::from_id_salt("rawsel").selected_text(RichText::new(name_of(*raw_sel)).color(BLUE)).show_ui(ui, |ui| {
+                                    for i in 0..=save.heroes.len() {
+                                        ui.selectable_value(raw_sel, i, name_of(i));
+                                    }
+                                });
+                            });
+                        });
+                        let blk = if *raw_sel == 0 { Some(&mut save.town) } else { save.heroes.get_mut(*raw_sel - 1).map(|h| &mut h.data) };
+                        if let Some(blk) = blk {
+                            let mut ch = false;
+                            section(ui, None, None, |s| {
+                                s.row(|ui| {
+                                    ui.vertical(|ui| {
+                                        if let Some(v) = blk.val.as_mut() {
+                                            ch = raw_tree(ui, "root", v, names, 0);
+                                        }
+                                    });
+                                });
+                            });
+                            if ch {
+                                blk.dirty = true;
+                            }
+                        }
+                    }
+                }
+                ui.add_space(40.0);
             });
-            self.show_backups = open;
+        });
+
+        if let Some(p) = pick {
+            self.open(p);
+        }
+        if rescan {
+            self.names = None;
+            self.scan();
+        }
+        if do_discard {
+            if let Some(p) = self.file.clone() {
+                self.open(p);
+            }
+        }
+        if do_save {
+            self.write();
+        }
+        if do_backup {
+            match self.backup_all("all_saves") {
+                Ok(p) => self.msg(format!("All saves backed up to {}", p.file_name().unwrap().to_string_lossy()), false),
+                Err(e) => self.msg(format!("Backup failed: {e}"), true),
+            }
+        }
+
+        // ---------- backups sheet ----------
+        if self.show_backups {
+            let mut action: Option<PathBuf> = None;
+            let mut close = false;
+            let bdir = backup_dir(Path::new(&self.dir));
+            let m = egui::Modal::new(egui::Id::new("backups"))
+                .frame(egui::Frame::new().fill(theme::CELL).corner_radius(egui::CornerRadius::same(16)).inner_margin(egui::Margin::same(18)))
+                .show(ctx, |ui| {
+                    ui.set_width(520.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Backups").font(theme::bold(17.0)));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if theme::text_btn(ui, "Done", BLUE, true, true) {
+                                close = true;
+                            }
+                        });
+                    });
+                    ui.add_space(10.0);
+                    let mut v: Vec<PathBuf> = std::fs::read_dir(&bdir).map(|r| r.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+                    v.sort_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok());
+                    v.reverse();
+                    egui::ScrollArea::vertical().max_height(380.0).show(ui, |ui| {
+                        let (zips, slots): (Vec<_>, Vec<_>) = v.into_iter().partition(|p| p.extension().map(|e| e == "zip").unwrap_or(false));
+                        theme::section_c(ui, Some("All saves"), Some("Restore All replaces every save slot. Your current saves are zipped first."), theme::CELL2, |s| {
+                            if zips.is_empty() {
+                                s.row(|ui| ui.label(gray("None yet. Use Back Up All.")));
+                            }
+                            for p in &zips {
+                                s.kv(p.file_name().unwrap().to_string_lossy().to_string(), |ui| {
+                                    if theme::text_btn(ui, "Restore All", BLUE, false, true) {
+                                        action = Some(p.clone());
+                                    }
+                                });
+                            }
+                        });
+                        theme::section_c(ui, Some("Single slots"), Some("Made automatically each time you save. Restores over the slot that's open."), theme::CELL2, |s| {
+                            if slots.is_empty() {
+                                s.row(|ui| ui.label(gray("None yet")));
+                            }
+                            for p in &slots {
+                                s.kv(p.file_name().unwrap().to_string_lossy().to_string(), |ui| {
+                                    if theme::text_btn(ui, "Restore", BLUE, false, true) {
+                                        action = Some(p.clone());
+                                    }
+                                });
+                            }
+                        });
+                    });
+                    ui.label(gray(bdir.display().to_string()).size(11.5));
+                });
+            if close || m.should_close() {
+                self.show_backups = false;
+            }
             if let Some(b) = action {
+                self.show_backups = false;
                 if b.extension().map(|e| e == "zip").unwrap_or(false) {
                     match self.restore_zip(&b) {
                         Ok(n) => {
                             self.scan();
-                            self.msg(format!("Restored {n} save slots from {} (previous saves zipped first)", b.file_name().unwrap().to_string_lossy()), false);
+                            self.msg(format!("Restored {n} save slots from {}", b.file_name().unwrap().to_string_lossy()), false);
                         }
                         Err(e) => self.msg(format!("Restore failed: {e}"), true),
                     }
@@ -874,7 +1068,7 @@ impl eframe::App for App {
                     match r {
                         Ok(()) => {
                             self.open(f.clone());
-                            self.msg(format!("Restored {} over {}", b.file_name().unwrap().to_string_lossy(), f.file_name().unwrap().to_string_lossy()), false);
+                            self.msg(format!("Restored {}", b.file_name().unwrap().to_string_lossy()), false);
                         }
                         Err(e) => self.msg(format!("Restore failed: {e}"), true),
                     }
@@ -882,108 +1076,35 @@ impl eframe::App for App {
             }
         }
 
-        let names = self.names.as_ref();
-        let Some(save) = self.save.as_mut() else {
-            egui::CentralPanel::default().frame(theme::panel_frame(14)).show(ctx, |ui| {
-                ui.vertical_centered(|ui| {
-                    ui.add_space(80.0);
-                    ui.label(RichText::new("No save loaded").size(22.0).strong());
-                    ui.label(weak("Point the folder box at your saves and press Scan."));
-                });
-            });
-            return;
-        };
-
-        egui::SidePanel::left("nav").resizable(false).exact_width(236.0).frame(theme::panel_frame(16)).show(ctx, |ui| {
-            let nav = |ui: &mut Ui, sel: bool, icon: &str, title: &str, sub: &str| -> bool {
-                let r = egui::Frame::new()
-                    .fill(if sel { Color32::from_rgba_unmultiplied(10, 132, 255, 110) } else { Color32::TRANSPARENT })
-                    .corner_radius(egui::CornerRadius::same(12))
-                    .inner_margin(egui::Margin::symmetric(10, 6))
-                    .show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(icon).size(18.0));
-                            ui.vertical(|ui| {
-                                ui.label(RichText::new(title).strong().color(theme::w(245)));
-                                if !sub.is_empty() {
-                                    ui.label(weak(sub).small());
-                                }
+        // ---------- toast ----------
+        let (text, err) = self.status.clone();
+        let age = now - self.status_t;
+        let life = if err { 10.0 } else { 5.0 };
+        if !text.is_empty() && age < life {
+            let alpha = ((life - age) / 0.4).clamp(0.0, 1.0) as f32;
+            #[allow(deprecated)]
+            let sr = ctx.screen_rect();
+            egui::Area::new(egui::Id::new("toast"))
+                .order(egui::Order::Foreground)
+                .anchor(egui::Align2::CENTER_BOTTOM, [135.0, -24.0])
+                .interactable(false)
+                .show(ctx, |ui| {
+                    ui.set_max_width(sr.width() * 0.6);
+                    egui::Frame::new()
+                        .fill(Color32::from_rgb(44, 44, 46).gamma_multiply(alpha))
+                        .corner_radius(egui::CornerRadius::same(255))
+                        .inner_margin(egui::Margin::symmetric(18, 10))
+                        .shadow(egui::Shadow { offset: [0, 6], blur: 24, spread: 0, color: Color32::from_black_alpha((140.0 * alpha) as u8) })
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                let col = if err { RED } else { theme::GREEN };
+                                let (r, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                                ui.painter().circle_filled(r.center(), 5.0, col.gamma_multiply(alpha));
+                                ui.add(egui::Label::new(RichText::new(&text).color(LABEL.gamma_multiply(alpha))).wrap());
                             });
                         });
-                    })
-                    .response
-                    .interact(egui::Sense::click());
-                if r.hovered() && !sel {
-                    ui.painter().rect_filled(r.rect, 12.0, theme::w(14));
-                }
-                r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
-            };
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                if nav(ui, self.view == View::Town, "🏰", "Town", "Resources & buildings") {
-                    self.view = View::Town;
-                }
-                ui.add_space(6.0);
-                ui.label(weak("HEROES").small());
-                for (i, h) in save.heroes.iter().enumerate() {
-                    let v = h.data.val.as_ref();
-                    let name = v.and_then(|v| v.get("name")).and_then(|n| n.str()).filter(|n| !n.is_empty()).unwrap_or("Empty hero slot");
-                    let lvl = v.and_then(|v| v.get("level")).and_then(|n| n.int()).unwrap_or(0);
-                    let class = v.and_then(|v| v.get("class")).and_then(|n| n.str()).unwrap_or("");
-                    let cl = names.map(|n| n.id_label(class)).unwrap_or(class.to_string());
-                    let cl = cl.split(" (").next().unwrap_or("").to_string();
-                    let title = format!("{name}{}", if h.data.dirty { "  •" } else { "" });
-                    let sub = if lvl > 0 { format!("Lv {lvl}  {cl}") } else { String::new() };
-                    if nav(ui, self.view == View::Hero(i), "⚔", &title, &sub) {
-                        self.view = View::Hero(i);
-                    }
-                }
-                ui.add_space(6.0);
-                if nav(ui, self.view == View::Raw, "🔧", "Advanced", "Raw data editor") {
-                    self.view = View::Raw;
-                }
-            });
-        });
-
-        let filter = &mut self.filter;
-        let filter2 = &mut self.filter2;
-        let raw_sel = &mut self.raw_sel;
-        egui::CentralPanel::default().frame(egui::Frame::new().inner_margin(egui::Margin::same(8))).show(ctx, |ui| {
-            egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| match self.view {
-                View::Town => {
-                    town_view(ui, save, names);
-                }
-                View::Hero(i) => {
-                    if let Some(h) = save.heroes.get_mut(i) {
-                        let run = h.level.is_some();
-                        hero_view(ui, &mut h.data, names, filter, filter2, run);
-                    }
-                }
-                View::Raw => {
-                    card(ui, Some("Advanced"), |ui| {
-                        ui.label(weak("Edit any value directly. Changes are applied exactly as typed, so use with care."));
-                        ui.horizontal_wrapped(|ui| {
-                            ui.selectable_value(raw_sel, 0, "Town");
-                            for (i, h) in save.heroes.iter().enumerate() {
-                                let n = h.data.val.as_ref().and_then(|v| v.get("name")).and_then(|n| n.str()).filter(|n| !n.is_empty()).unwrap_or("(empty)").to_string();
-                                ui.selectable_value(raw_sel, i + 1, n);
-                            }
-                        });
-                    });
-                    let blk = if *raw_sel == 0 { Some(&mut save.town) } else { save.heroes.get_mut(*raw_sel - 1).map(|h| &mut h.data) };
-                    if let Some(blk) = blk {
-                        let mut ch = false;
-                        card(ui, None, |ui| {
-                            if let Some(v) = blk.val.as_mut() {
-                                ch = raw_tree(ui, "root", v, names, 0);
-                            }
-                        });
-                        if ch {
-                            blk.dirty = true;
-                        }
-                    }
-                }
-            });
-        });
+                });
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
     }
 }

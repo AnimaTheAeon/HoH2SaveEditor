@@ -2,7 +2,8 @@
 
 A tiny, single-file save editor for Heroes of Hammerwatch II, written in Rust (egui).
 
-![Town](docs/screenshot_town.png)
+![Hero](docs/screenshot_hero.png)
+![Gear](docs/screenshot_gear.png)
 
 ## Features
 - Finds your Steam saves automatically (`Steam\userdata\<id>\619820\remote\saves`) and opens the newest slot.
