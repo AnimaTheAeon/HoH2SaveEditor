@@ -2,6 +2,8 @@
 
 A tiny, single-file save editor for Heroes of Hammerwatch II, written in Rust (egui).
 
+![Town](docs/screenshot_town.png)
+
 ## Features
 - Finds your Steam saves automatically (`Steam\userdata\<id>\619820\remote\saves`) and opens the newest slot.
 - Shows real names for items, trinkets, buildings, classes and skills, read live from the game's own `res/assets.bin` and language files. Nothing is bundled, so updates are picked up automatically.
