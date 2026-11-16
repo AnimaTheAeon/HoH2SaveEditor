@@ -748,24 +748,25 @@ fn raw_tree(ui: &mut Ui, label: &str, v: &mut V, names: Option<&Names>, depth: u
     c
 }
 
-/// iPadOS sidebar row. Returns true when tapped.
-fn side_item(ui: &mut Ui, sel: bool, glyph: &str, col: Color32, title: &str, trailing: &str) -> bool {
-    let fill = if sel { BLUE } else { Color32::TRANSPARENT };
-    let r = egui::Frame::new().fill(fill).corner_radius(egui::CornerRadius::same(10)).inner_margin(egui::Margin::symmetric(8, 6)).show(ui, |ui| {
+/// iPadOS sidebar row. Returns (tapped, row rect). The selected highlight is
+/// drawn separately so it can glide between rows.
+fn side_item(ui: &mut Ui, sel: bool, glyph: &str, col: Color32, title: &str, trailing: &str) -> (bool, egui::Rect) {
+    let r = egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 6)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
-            theme::tile(ui, glyph, if sel { col.gamma_multiply(0.9) } else { col });
+            theme::tile(ui, glyph, col);
             ui.add(egui::Label::new(RichText::new(title).size(15.0).color(LABEL)).truncate());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(RichText::new(trailing).size(13.5).color(if sel { LABEL.gamma_multiply(0.85) } else { GRAY }));
+                ui.label(RichText::new(trailing).size(13.5).color(if sel { LABEL.gamma_multiply(0.9) } else { GRAY }));
             });
         });
     });
-    let resp = theme::click_area(ui, r.response.rect, ui.id().with(("side", title, glyph)));
+    let rect = r.response.rect;
+    let resp = theme::click_area(ui, rect, ui.id().with(("side", title, glyph)));
     if resp.hovered() && !sel {
-        ui.painter().rect_filled(r.response.rect, 10.0, Color32::from_white_alpha(10));
+        ui.painter().rect_filled(rect, 12.0, Color32::from_white_alpha(8));
     }
-    resp.clicked()
+    (resp.clicked(), rect)
 }
 
 fn side_header(ui: &mut Ui, t: &str) {
@@ -779,10 +780,12 @@ fn side_header(ui: &mut Ui, t: &str) {
 
 impl eframe::App for App {
     fn clear_color(&self, _v: &egui::Visuals) -> [f32; 4] {
-        [0.0, 0.0, 0.0, 1.0]
+        [0.024, 0.027, 0.047, 1.0]
     }
 
     fn update(&mut self, ctx: &egui::Context, _f: &mut eframe::Frame) {
+        theme::background(ctx);
+        ctx.request_repaint_after(std::time::Duration::from_millis(100)); // gentle light drift
         if let Some(rx) = &self.names_rx {
             if let Ok(r) = rx.try_recv() {
                 match r {
@@ -803,9 +806,12 @@ impl eframe::App for App {
         let names = self.names.as_ref();
         egui::SidePanel::left("nav")
             .resizable(false)
-            .exact_width(270.0)
-            .frame(egui::Frame::new().fill(theme::SIDEBAR).inner_margin(egui::Margin { left: 10, right: 10, top: 18, bottom: 10 }))
+            .exact_width(290.0)
+            .frame(theme::glass(theme::SIDEBAR, 26).outer_margin(egui::Margin::same(10)).inner_margin(egui::Margin { left: 10, right: 22, top: 18, bottom: 10 }))
             .show(ctx, |ui| {
+                let pr = ui.max_rect().expand2(egui::vec2(10.0, 0.0));
+                let pr = egui::Rect::from_min_max(egui::pos2(pr.left(), pr.top() - 18.0), egui::pos2(pr.right(), pr.bottom() + 10.0));
+                theme::sheen(&ui.painter().with_clip_rect(pr.expand(2.0)), pr, 26.0);
                 ui.horizontal(|ui| {
                     ui.add_space(8.0);
                     ui.vertical(|ui| {
@@ -816,14 +822,23 @@ impl eframe::App for App {
                 ui.add_space(8.0);
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     let Some(save) = self.save.as_ref() else {
-                        if side_item(ui, self.view == View::Settings, "S", theme::GRAY3, "Settings", "") {
+                        if side_item(ui, self.view == View::Settings, "S", theme::GRAY3, "Settings", "").0 {
                             self.view = View::Settings;
                         }
                         return;
                     };
-                    if side_item(ui, self.view == View::Town, "T", theme::ORANGE, "Town", if save.town.dirty { "Edited" } else { "" }) {
-                        self.view = View::Town;
-                    }
+                    let hl = ui.painter().add(egui::Shape::Noop);
+                    let mut sel_rect = None;
+                    let mut item = |ui: &mut Ui, v: View, g: &str, col: Color32, title: &str, trail: &str, view: &mut View| {
+                        let (clicked, r) = side_item(ui, *view == v, g, col, title, trail);
+                        if *view == v {
+                            sel_rect = Some(r);
+                        }
+                        if clicked {
+                            *view = v;
+                        }
+                    };
+                    item(ui, View::Town, "T", theme::ORANGE, "Town", if save.town.dirty { "Edited" } else { "" }, &mut self.view);
                     side_header(ui, "Heroes");
                     for (i, h) in save.heroes.iter().enumerate() {
                         let v = h.data.val.as_ref();
@@ -832,16 +847,22 @@ impl eframe::App for App {
                         let class = v.and_then(|v| v.get("class")).and_then(|n| n.str()).unwrap_or("");
                         let (g, col) = class_style(class);
                         let trail = if h.data.dirty { "Edited".to_string() } else if lvl > 0 { format!("Lv {lvl}") } else { String::new() };
-                        if side_item(ui, self.view == View::Hero(i), g, col, name, &trail) {
-                            self.view = View::Hero(i);
-                        }
+                        item(ui, View::Hero(i), g, col, name, &trail, &mut self.view);
                     }
                     side_header(ui, "More");
-                    if side_item(ui, self.view == View::Raw, "{}", theme::INDIGO, "Advanced", "") {
-                        self.view = View::Raw;
-                    }
-                    if side_item(ui, self.view == View::Settings, "S", theme::GRAY3, "Settings", "") {
-                        self.view = View::Settings;
+                    item(ui, View::Raw, "{}", theme::INDIGO, "Advanced", "", &mut self.view);
+                    item(ui, View::Settings, "S", theme::GRAY3, "Settings", "", &mut self.view);
+                    // liquid selection: a blue glass lozenge that glides to the selected row
+                    if let Some(r) = sel_rect {
+                        let ctx = ui.ctx().clone();
+                        let y = ctx.animate_value_with_time(egui::Id::new("hl_y"), r.top(), 0.22);
+                        let h = ctx.animate_value_with_time(egui::Id::new("hl_h"), r.height(), 0.22);
+                        let rr = egui::Rect::from_min_size(egui::pos2(r.left(), y), egui::vec2(r.width(), h));
+                        let mut shapes = vec![egui::Shape::rect_filled(rr, 12.0, Color32::from_rgba_unmultiplied(10, 132, 255, 165))];
+                        shapes.push(egui::Shape::rect_stroke(rr, 12.0, egui::Stroke::new(1.0f32, Color32::from_white_alpha(46)), egui::StrokeKind::Inside));
+                        ui.painter().set(hl, egui::Shape::Vec(shapes));
+                        let p = ui.painter().clone();
+                        theme::sheen(&p, rr, 12.0);
                     }
                 });
             });
@@ -856,7 +877,7 @@ impl eframe::App for App {
         let raw_sel = &mut self.raw_sel;
         let dirty = self.save.as_ref().map(|s| s.town.dirty || s.heroes.iter().any(|h| h.data.dirty)).unwrap_or(false);
         let mut rescan = false;
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::BG).inner_margin(egui::Margin { left: 28, right: 20, top: 12, bottom: 0 })).show(ctx, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::new().inner_margin(egui::Margin { left: 18, right: 20, top: 14, bottom: 0 })).show(ctx, |ui| {
             // nav bar
             ui.horizontal(|ui| {
                 let cur = self.file.as_ref().map(|p| p.file_name().unwrap().to_string_lossy().to_string()).unwrap_or_else(|| "No save".into());
@@ -873,6 +894,8 @@ impl eframe::App for App {
                     ui.spinner();
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let r = theme::glass(theme::CELL, 255).inner_margin(egui::Margin::symmetric(14, 3)).show(ui, |ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if theme::text_btn(ui, "Save", BLUE, true, dirty) {
                         do_save = true;
                     }
@@ -888,6 +911,9 @@ impl eframe::App for App {
                     if theme::text_btn(ui, "Back Up All", BLUE, false, true) {
                         do_backup = true;
                     }
+                    });
+                    });
+                    theme::sheen(ui.painter(), r.response.rect, 16.0);
                 });
             });
             ui.add_space(6.0);
@@ -1006,7 +1032,8 @@ impl eframe::App for App {
             let mut close = false;
             let bdir = backup_dir(Path::new(&self.dir));
             let m = egui::Modal::new(egui::Id::new("backups"))
-                .frame(egui::Frame::new().fill(theme::CELL).corner_radius(egui::CornerRadius::same(16)).inner_margin(egui::Margin::same(18)))
+                .backdrop_color(Color32::from_black_alpha(110))
+                .frame(theme::glass(Color32::from_rgba_unmultiplied(30, 30, 40, 240), 28).inner_margin(egui::Margin::same(20)))
                 .show(ctx, |ui| {
                     ui.set_width(520.0);
                     ui.horizontal(|ui| {
@@ -1049,6 +1076,8 @@ impl eframe::App for App {
                         });
                     });
                     ui.label(gray(bdir.display().to_string()).size(11.5));
+                    let sr = ui.min_rect().expand(20.0);
+                    theme::sheen(&ui.painter().with_clip_rect(sr.expand(2.0)), sr, 28.0);
                 });
             if close || m.should_close() {
                 self.show_backups = false;
@@ -1090,11 +1119,12 @@ impl eframe::App for App {
                 .interactable(false)
                 .show(ctx, |ui| {
                     ui.set_max_width(sr.width() * 0.6);
-                    egui::Frame::new()
-                        .fill(Color32::from_rgb(44, 44, 46).gamma_multiply(alpha))
+                    let r = egui::Frame::new()
+                        .fill(Color32::from_rgba_unmultiplied(38, 38, 48, 215).gamma_multiply(alpha))
+                        .stroke(egui::Stroke::new(1.0f32, theme::EDGE.gamma_multiply(alpha)))
                         .corner_radius(egui::CornerRadius::same(255))
                         .inner_margin(egui::Margin::symmetric(18, 10))
-                        .shadow(egui::Shadow { offset: [0, 6], blur: 24, spread: 0, color: Color32::from_black_alpha((140.0 * alpha) as u8) })
+                        .shadow(egui::Shadow { offset: [0, 8], blur: 28, spread: 0, color: Color32::from_black_alpha((120.0 * alpha) as u8) })
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 let col = if err { RED } else { theme::GREEN };
@@ -1103,6 +1133,9 @@ impl eframe::App for App {
                                 ui.add(egui::Label::new(RichText::new(&text).color(LABEL.gamma_multiply(alpha))).wrap());
                             });
                         });
+                    if alpha > 0.5 {
+                        theme::sheen(ui.painter(), r.response.rect, 20.0);
+                    }
                 });
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }

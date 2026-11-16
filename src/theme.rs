@@ -8,15 +8,16 @@ use eframe::egui::{
 use std::path::Path;
 use std::sync::Arc;
 
-pub const BG: Color32 = Color32::BLACK;
-pub const SIDEBAR: Color32 = Color32::from_rgb(18, 18, 20);
-pub const CELL: Color32 = Color32::from_rgb(28, 28, 30);
-pub const CELL2: Color32 = Color32::from_rgb(44, 44, 46);
-pub const CELL3: Color32 = Color32::from_rgb(58, 58, 60);
-pub const SEP: Color32 = Color32::from_rgb(56, 56, 58);
+pub const BG: Color32 = Color32::from_rgb(6, 7, 12);
+pub const SIDEBAR: Color32 = Color32::from_rgba_premultiplied(14, 14, 16, 16);
+pub const CELL: Color32 = Color32::from_rgba_premultiplied(19, 19, 21, 21);
+pub const CELL2: Color32 = Color32::from_rgba_premultiplied(30, 30, 32, 32);
+pub const CELL3: Color32 = Color32::from_rgba_premultiplied(48, 48, 50, 50);
+pub const SEP: Color32 = Color32::from_rgba_premultiplied(30, 30, 30, 30);
+pub const EDGE: Color32 = Color32::from_rgba_premultiplied(40, 40, 40, 40);
 pub const LABEL: Color32 = Color32::from_rgb(255, 255, 255);
-pub const GRAY: Color32 = Color32::from_rgb(142, 142, 147);
-pub const GRAY3: Color32 = Color32::from_rgb(72, 72, 74);
+pub const GRAY: Color32 = Color32::from_rgb(168, 168, 178);
+pub const GRAY3: Color32 = Color32::from_rgb(98, 98, 106);
 pub const BLUE: Color32 = Color32::from_rgb(10, 132, 255);
 pub const GREEN: Color32 = Color32::from_rgb(48, 209, 88);
 pub const RED: Color32 = Color32::from_rgb(255, 69, 58);
@@ -79,15 +80,16 @@ pub fn apply(ctx: &egui::Context) {
     fonts(ctx);
     let mut s = (*ctx.style()).clone();
     let mut v = egui::Visuals::dark();
-    v.panel_fill = BG;
-    v.window_fill = CELL;
-    v.window_stroke = Stroke::NONE;
+    v.panel_fill = Color32::TRANSPARENT;
+    v.window_fill = Color32::from_rgba_unmultiplied(34, 34, 42, 236);
+    v.window_stroke = Stroke::new(1.0f32, EDGE);
     v.window_corner_radius = CornerRadius::same(14);
     v.window_shadow = egui::Shadow { offset: [0, 12], blur: 40, spread: 0, color: Color32::from_black_alpha(160) };
     v.popup_shadow = egui::Shadow { offset: [0, 8], blur: 30, spread: 0, color: Color32::from_black_alpha(150) };
     v.menu_corner_radius = CornerRadius::same(13);
     v.extreme_bg_color = CELL2;
     v.faint_bg_color = CELL;
+    v.window_highlight_topmost = false;
     v.selection.bg_fill = BLUE.gamma_multiply(0.6);
     v.selection.stroke = Stroke::new(1.0f32, LABEL);
     v.hyperlink_color = BLUE;
@@ -300,12 +302,13 @@ pub fn section_c<R>(ui: &mut Ui, header: Option<&str>, footer: Option<&str>, fil
         });
         ui.add_space(2.0);
     }
-    let r = Frame::new().fill(fill).corner_radius(CornerRadius::same(12)).show(ui, |ui| {
+    let r = glass(fill, 18).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.spacing_mut().item_spacing.y = 0.0;
         let mut s = Section { ui, n: 0, indent: 16.0 };
         add(&mut s)
     });
+    sheen(ui.painter(), r.response.rect, 18.0);
     if let Some(f) = footer {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
@@ -320,4 +323,74 @@ pub fn section_c<R>(ui: &mut Ui, header: Option<&str>, footer: Option<&str>, fil
 /// Make an already-drawn area clickable (sidebar items, expandable rows).
 pub fn click_area(ui: &mut Ui, rect: Rect, id: egui::Id) -> Response {
     ui.interact(rect, id, Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+// ---------------- liquid glass ----------------
+
+/// Translucent glass sheet: tinted fill, hairline edge, soft drop shadow.
+pub fn glass(fill: Color32, radius: u8) -> Frame {
+    Frame::new()
+        .fill(fill)
+        .stroke(Stroke::new(1.0f32, EDGE))
+        .corner_radius(CornerRadius::same(radius))
+        .shadow(egui::Shadow { offset: [0, 10], blur: 30, spread: 0, color: Color32::from_black_alpha(55) })
+}
+
+/// Specular highlights: a bright hairline across the top edge (fading at the
+/// ends) and a fainter one along the bottom, like light caught in curved glass.
+pub fn sheen(p: &egui::Painter, rect: Rect, radius: f32) {
+    let seg = |y: f32, peak: f32| {
+        let (l, r) = (rect.left() + radius * 0.8, rect.right() - radius * 0.8);
+        let n = 32;
+        for i in 0..n {
+            let (t0, t1) = (i as f32 / n as f32, (i + 1) as f32 / n as f32);
+            let a = (1.0 - ((t0 + t1) - 1.0).abs()).powf(0.7) * peak;
+            p.line_segment(
+                [egui::pos2(l + (r - l) * t0, y), egui::pos2(l + (r - l) * t1, y)],
+                Stroke::new(1.0f32, Color32::from_white_alpha(a as u8)),
+            );
+        }
+    };
+    seg(rect.top() + 0.5, 120.0);
+    seg(rect.bottom() - 0.5, 35.0);
+}
+
+/// Radial light blob: bright centre fading to nothing (stands in for the
+/// blurred wallpaper that glass sits on).
+fn blob(p: &egui::Painter, c: egui::Pos2, r: f32, col: Color32) {
+    let mut m = egui::Mesh::default();
+    let n = 72u32;
+    m.colored_vertex(c, col);
+    let mid = col.gamma_multiply(0.42);
+    for k in 0..2u32 {
+        let (rad, colr) = if k == 0 { (r * 0.5, mid) } else { (r, Color32::TRANSPARENT) };
+        for i in 0..n {
+            let a = i as f32 / n as f32 * std::f32::consts::TAU;
+            m.colored_vertex(c + egui::Vec2::angled(a) * rad, colr);
+        }
+    }
+    for i in 0..n {
+        let j = (i + 1) % n;
+        m.add_triangle(0, 1 + i, 1 + j);
+        m.add_triangle(1 + i, 1 + n + i, 1 + n + j);
+        m.add_triangle(1 + i, 1 + n + j, 1 + j);
+    }
+    p.add(m);
+}
+
+/// Wallpaper: near-black with slow-drifting pools of coloured light.
+pub fn background(ctx: &egui::Context) {
+    #[allow(deprecated)]
+    let rect = ctx.screen_rect();
+    let p = ctx.layer_painter(egui::LayerId::background());
+    p.rect_filled(rect, 0.0, BG);
+    let t = ctx.input(|i| i.time) as f32 * 0.05;
+    let (sz, o) = (rect.size(), rect.min);
+    let at = |x: f32, y: f32| o + vec2(sz.x * x, sz.y * y);
+    let m = sz.x.max(sz.y);
+    blob(&p, at(0.18 + 0.05 * t.sin(), 0.12 + 0.04 * (t * 1.3).cos()), m * 0.62, Color32::from_rgba_unmultiplied(40, 100, 255, 120));
+    blob(&p, at(0.92 + 0.04 * (t * 0.8).cos(), 0.22 + 0.05 * t.sin()), m * 0.50, Color32::from_rgba_unmultiplied(160, 70, 255, 105));
+    blob(&p, at(0.62 + 0.05 * (t * 1.1).sin(), 0.98), m * 0.58, Color32::from_rgba_unmultiplied(0, 200, 210, 80));
+    blob(&p, at(0.04, 0.90 + 0.04 * (t * 0.9).cos()), m * 0.40, Color32::from_rgba_unmultiplied(255, 70, 150, 70));
+    blob(&p, at(0.45, 0.45), m * 0.35, Color32::from_rgba_unmultiplied(255, 140, 60, 26));
 }
