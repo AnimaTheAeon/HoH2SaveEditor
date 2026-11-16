@@ -1,0 +1,25 @@
+name: build
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup update stable && rustup default stable
+      - run: cargo build --release
+      - run: Copy-Item target/release/hoh2edit.exe HoH2SaveEditor.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HoH2SaveEditor
+          path: HoH2SaveEditor.exe
+      - name: Publish to "latest" release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest build
+          files: HoH2SaveEditor.exe
