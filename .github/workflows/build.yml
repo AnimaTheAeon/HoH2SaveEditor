@@ -11,15 +11,20 @@ jobs:
       - uses: actions/checkout@v4
       - run: rustup update stable && rustup default stable
       - run: cargo build --release
-      - run: Copy-Item target/release/hoh2edit.exe HoH2SaveEditor.exe
+      - run: Copy-Item target/release/hammersmith.exe Hammersmith.exe
       - uses: actions/upload-artifact@v4
         with:
-          name: HoH2SaveEditor
-          path: HoH2SaveEditor.exe
+          name: Hammersmith
+          path: Hammersmith.exe
+      - name: Clear old "latest" release
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete latest --yes --cleanup-tag; exit 0
       - name: Publish to "latest" release
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          name: Latest build
-          files: HoH2SaveEditor.exe
+          name: Hammersmith (latest build)
+          files: Hammersmith.exe

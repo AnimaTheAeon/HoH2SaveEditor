@@ -35,11 +35,11 @@ fn main() {
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1180.0, 780.0]).with_min_inner_size([900.0, 560.0])
-            .with_title("Hammerwatch II Save Editor")
+            .with_title("Hammersmith")
             .with_icon(std::sync::Arc::new(egui::IconData { rgba: include_bytes!("../assets/icon64.rgba").to_vec(), width: 64, height: 64 })),
         ..Default::default()
     };
-    let _ = eframe::run_native("hoh2edit", opts, Box::new(|cc| Ok(Box::new(App::new(cc)))));
+    let _ = eframe::run_native("hammersmith", opts, Box::new(|cc| Ok(Box::new(App::new(cc)))));
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -816,8 +816,8 @@ impl eframe::App for App {
                 ui.horizontal(|ui| {
                     ui.add_space(8.0);
                     ui.vertical(|ui| {
-                        ui.label(RichText::new("Hammerwatch").font(theme::bold(26.0)).color(LABEL));
-                        ui.label(gray("Save Editor"));
+                        ui.label(RichText::new("Hammersmith").font(theme::bold(26.0)).color(LABEL));
+                        ui.label(gray("Hammerwatch II Save Editor"));
                     });
                 });
                 ui.add_space(8.0);

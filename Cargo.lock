@@ -806,6 +806,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hammersmith"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "lz4_flex",
+ "winresource",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -831,15 +840,6 @@ name = "hexf-parse"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
-
-[[package]]
-name = "hoh2edit"
-version = "0.1.0"
-dependencies = [
- "eframe",
- "lz4_flex",
- "winresource",
-]
 
 [[package]]
 name = "icu_collections"

@@ -1,6 +1,11 @@
-# Heroes of Hammerwatch II Save Editor
+<img src="assets/icon.png" width="96" align="left">
 
-A tiny, single-file save editor for Heroes of Hammerwatch II, written in Rust (egui).
+# Hammersmith
+
+A tiny, single-file save editor for **Heroes of Hammerwatch II**, written in Rust (egui).
+
+**[Download Hammersmith.exe](https://github.com/AnimaTheAeon/HoH2SaveEditor/releases/download/latest/Hammersmith.exe)**
+<br clear="left">
 
 ![Hero](docs/screenshot_hero.png)
 ![Gear](docs/screenshot_gear.png)
@@ -24,5 +29,5 @@ Values use Crackshell's SValue binary form. Type tags: 01 array, 02 dict, 04 flo
 IDs are the game's `HashString()`: MurmurHash3 x86_32 with seed `0xF808409C`.
 
 ## Build
-`cargo build --release` (Windows), or push to GitHub and let the Actions workflow build `HoH2SaveEditor.exe`.
-Self-test any save: `hoh2edit --selftest path\to\0.hps`
+`cargo build --release` (Windows), or push to GitHub and let the Actions workflow build `Hammersmith.exe`.
+Self-test any save: `hammersmith --selftest path\to\0.hps`
