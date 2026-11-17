@@ -434,7 +434,7 @@ fn picker(s: &mut Section, names: &Names, kind: Kind, filter: &mut String, hint:
     picked
 }
 
-/// Equipment list with iOS-style expandable rows.
+/// Equipment list with expandable rows.
 /// Item: [quality, baseHash, intensity, ilvl, upgrade, colorA, colorB, mods…]
 fn gear_rows(s: &mut Section, items: &mut Vec<V>, names: Option<&Names>, salt: &str, equipped: bool) -> bool {
     let mut c = false;
@@ -749,7 +749,7 @@ fn raw_tree(ui: &mut Ui, label: &str, v: &mut V, names: Option<&Names>, depth: u
     c
 }
 
-/// iPadOS sidebar row. Returns (tapped, row rect). The selected highlight is
+/// Sidebar row. Returns (tapped, row rect). The selected highlight is
 /// drawn separately so it can glide between rows.
 fn side_item(ui: &mut Ui, sel: bool, glyph: &str, col: Color32, title: &str, trailing: &str) -> (bool, egui::Rect) {
     let r = egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 6)).show(ui, |ui| {
@@ -861,7 +861,7 @@ impl eframe::App for App {
                     side_header(ui, "More");
                     item(ui, View::Raw, "{}", theme::INDIGO, "Advanced", "", &mut self.view);
                     item(ui, View::Settings, "S", theme::GRAY3, "Settings", "", &mut self.view);
-                    // liquid selection: a blue glass lozenge that glides to the selected row
+                    // selection: a blue glass lozenge that glides to the selected row
                     if let Some(r) = sel_rect {
                         let ctx = ui.ctx().clone();
                         let y = ctx.animate_value_with_time(egui::Id::new("hl_y"), r.top(), 0.22);
@@ -929,7 +929,12 @@ impl eframe::App for App {
             });
             ui.add_space(6.0);
             egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
-                ui.set_max_width(ui.available_width().min(860.0));
+                // keep a comfortable reading width and centre it in wide windows
+                let full = ui.available_width();
+                let cw = full.min(900.0);
+                let x0 = ui.cursor().left() + ((full - cw) / 2.0).floor();
+                let col = egui::Rect::from_min_size(egui::pos2(x0, ui.cursor().top()), egui::vec2(cw, f32::INFINITY));
+                ui.scope_builder(egui::UiBuilder::new().max_rect(col), |ui| {
                 match (self.view, self.save.as_mut()) {
                     (View::Settings, _) | (_, None) => {
                         theme::large_title(ui, "Settings", "");
@@ -1012,6 +1017,7 @@ impl eframe::App for App {
                     }
                 }
                 ui.add_space(40.0);
+                });
             });
         });
 

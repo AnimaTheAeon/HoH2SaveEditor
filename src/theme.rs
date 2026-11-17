@@ -1,5 +1,6 @@
-//! iOS / iPadOS (dark) look: black background, inset-grouped lists,
-//! large bold titles, blue text buttons, switches, steppers, icon tiles.
+//! Hammersmith's dark glass theme: grouped lists, large bold titles,
+//! tinted text buttons, switches, steppers and icon tiles. All shapes and
+//! glyphs are drawn in code; no third-party design assets are used.
 
 use eframe::egui::{
     self, Align, Color32, CornerRadius, FontFamily, FontId, Frame, Layout, Margin, Rect, Response, RichText, Sense,
@@ -144,7 +145,7 @@ pub fn semibold(s: impl Into<String>, size: f32) -> RichText {
 
 // ---------------- buttons & controls ----------------
 
-/// Plain tinted text button, like an iOS bar button.
+/// Plain tinted text button for toolbars.
 pub fn text_btn(ui: &mut Ui, text: &str, col: Color32, strong: bool, enabled: bool) -> bool {
     let col = if enabled { col } else { GRAY3 };
     let t = if strong { semibold(text, 15.0).color(col) } else { RichText::new(text).size(15.0).color(col) };
@@ -157,7 +158,7 @@ pub fn filled_btn(ui: &mut Ui, text: &str, col: Color32) -> bool {
         .clicked()
 }
 
-/// iOS switch.
+/// Toggle switch.
 pub fn switch(ui: &mut Ui, on: &mut bool) -> Response {
     let (rect, mut resp) = ui.allocate_exact_size(vec2(51.0, 31.0), Sense::click());
     if resp.clicked() {
@@ -175,7 +176,7 @@ pub fn switch(ui: &mut Ui, on: &mut bool) -> Response {
     resp
 }
 
-/// iOS stepper ( − | + ). Returns -1 / +1 when tapped.
+/// Stepper ( − | + ). Returns -1 / +1 when tapped.
 pub fn stepper(ui: &mut Ui) -> i32 {
     let (rect, resp) = ui.allocate_exact_size(vec2(94.0, 30.0), Sense::hover());
     let p = ui.painter().clone();
@@ -201,7 +202,7 @@ pub fn stepper(ui: &mut Ui) -> i32 {
     d
 }
 
-/// Rounded-square icon tile with a white glyph (Settings-app style).
+/// Rounded-square icon tile with a white glyph.
 pub fn tile(ui: &mut Ui, glyph: &str, col: Color32) {
     let (rect, _) = ui.allocate_exact_size(vec2(29.0, 29.0), Sense::hover());
     let p = ui.painter();
@@ -241,7 +242,7 @@ pub fn search(ui: &mut Ui, text: &mut String, hint: &str) -> Response {
         .inner
 }
 
-/// Borderless, right-aligned text field as used in iOS forms.
+/// Borderless, right-aligned text field for form rows.
 pub fn text_field(ui: &mut Ui, text: &mut String, w: f32) -> Response {
     ui.add(egui::TextEdit::singleline(text).frame(false).horizontal_align(Align::RIGHT).desired_width(w).text_color(GRAY))
 }
@@ -255,7 +256,7 @@ pub struct Section<'a> {
 }
 
 impl Section<'_> {
-    /// One list row (44pt min). Separators are inset like iOS.
+    /// One list row. Separators are inset from the left edge.
     pub fn row<R>(&mut self, add: impl FnOnce(&mut Ui) -> R) -> R {
         self.row_indent(16.0, add)
     }
@@ -325,7 +326,7 @@ pub fn click_area(ui: &mut Ui, rect: Rect, id: egui::Id) -> Response {
     ui.interact(rect, id, Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-// ---------------- liquid glass ----------------
+// ---------------- glass ----------------
 
 /// Translucent glass sheet: tinted fill, hairline edge, soft drop shadow.
 pub fn glass(fill: Color32, radius: u8) -> Frame {

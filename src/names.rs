@@ -99,10 +99,16 @@ impl Names {
         }
         // <string name="id">X</string> ... <string name="name">.lang.key</string>
         let mut p = 0;
+        // a file's main definition (e.g. skills/wiz_meteor.sval, id "wiz_meteor"):
+        // its display name is the file's first "name", which may come before the id
+        let stem = path.rsplit('/').next().unwrap_or("").split('.').next().unwrap_or("");
+        let first_name = between(s, 0, "name=\"name\">", '<').map(|(v, _)| v.to_string());
         while let Some((id, e)) = between(s, p, "name=\"id\">", '<') {
             p = e;
             let win_end = s[e..].find("name=\"id\">").map(|x| x + e).unwrap_or(s.len()).min(e + 1500);
-            let disp = between(&s[..win_end], e, "name=\"name\">", '<').map(|(v, _)| self.tr(v));
+            let first_id = between(s, 0, "name=\"id\">", '<').map(|(v, _)| v) == Some(id);
+            let disp = if id == stem || first_id { first_name.as_deref().map(|v| self.tr(v)) } else { None };
+            let disp = disp.or_else(|| between(&s[..win_end], e, "name=\"name\">", '<').map(|(v, _)| self.tr(v)));
             let disp = disp.or_else(|| self.lang.get(&format!("trinket.{id}.name")).cloned()).unwrap_or_else(|| id.to_string());
             let h = hash_string(id);
             let replace = match self.defs.get(&h) {
