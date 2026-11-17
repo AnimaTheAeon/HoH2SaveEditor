@@ -35,7 +35,8 @@ fn main() {
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1180.0, 780.0]).with_min_inner_size([900.0, 560.0])
-            .with_title("Hammerwatch II Save Editor"),
+            .with_title("Hammerwatch II Save Editor")
+            .with_icon(std::sync::Arc::new(egui::IconData { rgba: include_bytes!("../assets/icon64.rgba").to_vec(), width: 64, height: 64 })),
         ..Default::default()
     };
     let _ = eframe::run_native("hoh2edit", opts, Box::new(|cc| Ok(Box::new(App::new(cc)))));
