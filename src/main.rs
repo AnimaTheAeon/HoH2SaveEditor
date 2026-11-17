@@ -11,7 +11,7 @@ use names::{Kind, Names};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use sval::V;
-use theme::{section, Section, gray, semibold, BLUE, GRAY, LABEL, RED};
+use theme::{section, Section, gray, semibold, ACCENT, GRAY, LABEL, RED};
 
 const MATS: [&str; 7] = ["Gold", "Wood", "Stone", "Iron", "Crystals", "Dust", "Ore"];
 const QUAL: [(i32, &str); 9] = [
@@ -398,7 +398,7 @@ fn num_row(s: &mut Section, label: &str, v: &mut V, step: bool, max: Option<i32>
             }
         };
         if let Some(m) = max {
-            if theme::text_btn(ui, "Max", BLUE, false, true) {
+            if theme::text_btn(ui, "Max", ACCENT, false, true) {
                 *v = V::Int(m);
                 c = true;
             }
@@ -420,7 +420,7 @@ fn picker(s: &mut Section, names: &Names, kind: Kind, filter: &mut String, hint:
         }
         for d in list {
             s.row(|ui| {
-                let r = ui.add(egui::Button::new(RichText::new(format!("Add {}", d.name)).color(BLUE)).frame(false));
+                let r = ui.add(egui::Button::new(RichText::new(format!("Add {}", d.name)).color(ACCENT)).frame(false));
                 ui.label(gray(&d.id).small());
                 if r.clicked() {
                     picked = Some(d.id.clone());
@@ -576,7 +576,7 @@ fn hero_view(ui: &mut Ui, blk: &mut Block, names: Option<&Names>, filter: &mut S
         if let Some(V::Bool(d)) = h.get_mut("dead") {
             s.kv("Status", |ui| {
                 if *d {
-                    if theme::filled_btn(ui, "Revive", BLUE) {
+                    if theme::filled_btn(ui, "Revive", theme::ACCENT_FILL) {
                         *d = false;
                         c = true;
                     }
@@ -781,7 +781,7 @@ fn side_header(ui: &mut Ui, t: &str) {
 
 impl eframe::App for App {
     fn clear_color(&self, _v: &egui::Visuals) -> [f32; 4] {
-        [0.024, 0.027, 0.047, 1.0]
+        [0.039, 0.031, 0.035, 1.0]
     }
 
     fn update(&mut self, ctx: &egui::Context, _f: &mut eframe::Frame) {
@@ -847,7 +847,7 @@ impl eframe::App for App {
                             *view = v;
                         }
                     };
-                    item(ui, View::Town, "T", theme::ORANGE, "Town", if save.town.dirty { "Edited" } else { "" }, &mut self.view);
+                    item(ui, View::Town, "T", theme::GREEN, "Town", if save.town.dirty { "Edited" } else { "" }, &mut self.view);
                     side_header(ui, "Heroes");
                     for (i, h) in save.heroes.iter().enumerate() {
                         let v = h.data.val.as_ref();
@@ -867,7 +867,7 @@ impl eframe::App for App {
                         let y = ctx.animate_value_with_time(egui::Id::new("hl_y"), r.top(), 0.22);
                         let h = ctx.animate_value_with_time(egui::Id::new("hl_h"), r.height(), 0.22);
                         let rr = egui::Rect::from_min_size(egui::pos2(r.left(), y), egui::vec2(r.width(), h));
-                        let mut shapes = vec![egui::Shape::rect_filled(rr, 12.0, Color32::from_rgba_unmultiplied(10, 132, 255, 165))];
+                        let mut shapes = vec![egui::Shape::rect_filled(rr, 12.0, theme::ACCENT_FILL.gamma_multiply(0.92))];
                         shapes.push(egui::Shape::rect_stroke(rr, 12.0, egui::Stroke::new(1.0f32, Color32::from_white_alpha(46)), egui::StrokeKind::Inside));
                         ui.painter().set(hl, egui::Shape::Vec(shapes));
                         let p = ui.painter().clone();
@@ -892,7 +892,7 @@ impl eframe::App for App {
             // nav bar
             ui.horizontal(|ui| {
                 let cur = self.file.as_ref().map(|p| p.file_name().unwrap().to_string_lossy().to_string()).unwrap_or_else(|| "No save".into());
-                egui::ComboBox::from_id_salt("slot").selected_text(RichText::new(cur).color(BLUE)).width(150.0).show_ui(ui, |ui| {
+                egui::ComboBox::from_id_salt("slot").selected_text(RichText::new(cur).color(ACCENT)).width(150.0).show_ui(ui, |ui| {
                     for (i, (p, _)) in self.files.iter().enumerate() {
                         let n = p.file_name().unwrap().to_string_lossy().to_string();
                         let lbl = if i == 0 { format!("{n}  (newest)") } else { n };
@@ -907,7 +907,7 @@ impl eframe::App for App {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let r = theme::glass(theme::CELL, 255).inner_margin(egui::Margin::symmetric(14, 3)).show(ui, |ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if theme::text_btn(ui, "Save", BLUE, true, dirty) {
+                    if theme::text_btn(ui, "Save", ACCENT, true, dirty) {
                         do_save = true;
                     }
                     ui.add_space(6.0);
@@ -915,11 +915,11 @@ impl eframe::App for App {
                         do_discard = true;
                     }
                     ui.add_space(6.0);
-                    if theme::text_btn(ui, "Backups", BLUE, false, true) {
+                    if theme::text_btn(ui, "Backups", ACCENT, false, true) {
                         self.show_backups = true;
                     }
                     ui.add_space(6.0);
-                    if theme::text_btn(ui, "Back Up All", BLUE, false, true) {
+                    if theme::text_btn(ui, "Back Up All", ACCENT, false, true) {
                         do_backup = true;
                     }
                     });
@@ -941,7 +941,7 @@ impl eframe::App for App {
                         section(ui, Some("Saves folder"), Some("Usually Steam\\userdata\\<your id>\\619820\\remote\\saves. Found automatically."), |s| {
                             s.row(|ui| {
                                 let r = ui.add(egui::TextEdit::singleline(&mut self.dir).frame(false).desired_width(ui.available_width() - 70.0));
-                                if theme::text_btn(ui, "Scan", BLUE, true, true) || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                                if theme::text_btn(ui, "Scan", ACCENT, true, true) || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
                                     rescan = true;
                                 }
                             });
@@ -956,12 +956,12 @@ impl eframe::App for App {
                             let bd = backup_dir(Path::new(&self.dir)).display().to_string();
                             s.kv("Location", |ui| ui.add(egui::Label::new(gray(bd)).truncate()));
                             s.row(|ui| {
-                                if theme::text_btn(ui, "Back Up All Saves Now", BLUE, false, true) {
+                                if theme::text_btn(ui, "Back Up All Saves Now", ACCENT, false, true) {
                                     do_backup = true;
                                 }
                             });
                             s.row(|ui| {
-                                if theme::text_btn(ui, "Show Backups", BLUE, false, true) {
+                                if theme::text_btn(ui, "Show Backups", ACCENT, false, true) {
                                     self.show_backups = true;
                                 }
                             });
@@ -991,7 +991,7 @@ impl eframe::App for App {
                                         save.heroes.get(i - 1).and_then(|h| h.data.val.as_ref()).and_then(|v| v.get("name")).and_then(|n| n.str()).filter(|n| !n.is_empty()).unwrap_or("Empty slot").to_string()
                                     }
                                 };
-                                egui::ComboBox::from_id_salt("rawsel").selected_text(RichText::new(name_of(*raw_sel)).color(BLUE)).show_ui(ui, |ui| {
+                                egui::ComboBox::from_id_salt("rawsel").selected_text(RichText::new(name_of(*raw_sel)).color(ACCENT)).show_ui(ui, |ui| {
                                     for i in 0..=save.heroes.len() {
                                         ui.selectable_value(raw_sel, i, name_of(i));
                                     }
@@ -1056,7 +1056,7 @@ impl eframe::App for App {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("Backups").font(theme::bold(17.0)));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if theme::text_btn(ui, "Done", BLUE, true, true) {
+                            if theme::text_btn(ui, "Done", ACCENT, true, true) {
                                 close = true;
                             }
                         });
@@ -1073,7 +1073,7 @@ impl eframe::App for App {
                             }
                             for p in &zips {
                                 s.kv(p.file_name().unwrap().to_string_lossy().to_string(), |ui| {
-                                    if theme::text_btn(ui, "Restore All", BLUE, false, true) {
+                                    if theme::text_btn(ui, "Restore All", ACCENT, false, true) {
                                         action = Some(p.clone());
                                     }
                                 });
@@ -1085,7 +1085,7 @@ impl eframe::App for App {
                             }
                             for p in &slots {
                                 s.kv(p.file_name().unwrap().to_string_lossy().to_string(), |ui| {
-                                    if theme::text_btn(ui, "Restore", BLUE, false, true) {
+                                    if theme::text_btn(ui, "Restore", ACCENT, false, true) {
                                         action = Some(p.clone());
                                     }
                                 });

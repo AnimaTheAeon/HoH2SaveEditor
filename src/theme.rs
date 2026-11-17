@@ -9,7 +9,7 @@ use eframe::egui::{
 use std::path::Path;
 use std::sync::Arc;
 
-pub const BG: Color32 = Color32::from_rgb(6, 7, 12);
+pub const BG: Color32 = Color32::from_rgb(10, 8, 9);
 pub const SIDEBAR: Color32 = Color32::from_rgba_premultiplied(14, 14, 16, 16);
 pub const CELL: Color32 = Color32::from_rgba_premultiplied(19, 19, 21, 21);
 pub const CELL2: Color32 = Color32::from_rgba_premultiplied(30, 30, 32, 32);
@@ -20,6 +20,10 @@ pub const LABEL: Color32 = Color32::from_rgb(255, 255, 255);
 pub const GRAY: Color32 = Color32::from_rgb(168, 168, 178);
 pub const GRAY3: Color32 = Color32::from_rgb(98, 98, 106);
 pub const BLUE: Color32 = Color32::from_rgb(10, 132, 255);
+/// Forge amber: Hammersmith's accent (buttons, links, selection), matching the icon.
+pub const ACCENT: Color32 = Color32::from_rgb(255, 172, 64);
+/// Deeper copper for filled shapes so white text stays readable on top.
+pub const ACCENT_FILL: Color32 = Color32::from_rgb(196, 104, 22);
 pub const GREEN: Color32 = Color32::from_rgb(48, 209, 88);
 pub const RED: Color32 = Color32::from_rgb(255, 69, 58);
 pub const ORANGE: Color32 = Color32::from_rgb(255, 159, 10);
@@ -91,10 +95,10 @@ pub fn apply(ctx: &egui::Context) {
     v.extreme_bg_color = CELL2;
     v.faint_bg_color = CELL;
     v.window_highlight_topmost = false;
-    v.selection.bg_fill = BLUE.gamma_multiply(0.6);
+    v.selection.bg_fill = ACCENT_FILL.gamma_multiply(0.75);
     v.selection.stroke = Stroke::new(1.0f32, LABEL);
-    v.hyperlink_color = BLUE;
-    v.text_cursor.stroke = Stroke::new(2.0f32, BLUE);
+    v.hyperlink_color = ACCENT;
+    v.text_cursor.stroke = Stroke::new(2.0f32, ACCENT);
     let r = CornerRadius::same(8);
     let w = &mut v.widgets;
     w.noninteractive.bg_stroke = Stroke::new(0.5f32, SEP);
@@ -167,7 +171,7 @@ pub fn switch(ui: &mut Ui, on: &mut bool) -> Response {
     }
     let t = ui.ctx().animate_bool_with_time(resp.id, *on, 0.18);
     let p = ui.painter();
-    let bg = Color32::from_rgb(57, 57, 61).lerp_to_gamma(GREEN, t);
+    let bg = Color32::from_rgb(57, 57, 61).lerp_to_gamma(ACCENT_FILL, t);
     p.rect_filled(rect, CornerRadius::same(255), bg);
     let r = 13.5;
     let cx = egui::lerp((rect.left() + 2.0 + r)..=(rect.right() - 2.0 - r), t);
@@ -207,6 +211,7 @@ pub fn tile(ui: &mut Ui, glyph: &str, col: Color32) {
     let (rect, _) = ui.allocate_exact_size(vec2(29.0, 29.0), Sense::hover());
     let p = ui.painter();
     p.rect_filled(rect, CornerRadius::same(7), col);
+    p.rect_stroke(rect, CornerRadius::same(7), Stroke::new(1.0f32, Color32::from_black_alpha(70)), egui::StrokeKind::Inside);
     p.text(rect.center(), egui::Align2::CENTER_CENTER, glyph, bold(14.0), LABEL);
 }
 
@@ -389,9 +394,10 @@ pub fn background(ctx: &egui::Context) {
     let (sz, o) = (rect.size(), rect.min);
     let at = |x: f32, y: f32| o + vec2(sz.x * x, sz.y * y);
     let m = sz.x.max(sz.y);
-    blob(&p, at(0.18 + 0.05 * t.sin(), 0.12 + 0.04 * (t * 1.3).cos()), m * 0.62, Color32::from_rgba_unmultiplied(40, 100, 255, 120));
-    blob(&p, at(0.92 + 0.04 * (t * 0.8).cos(), 0.22 + 0.05 * t.sin()), m * 0.50, Color32::from_rgba_unmultiplied(160, 70, 255, 105));
-    blob(&p, at(0.62 + 0.05 * (t * 1.1).sin(), 0.98), m * 0.58, Color32::from_rgba_unmultiplied(0, 200, 210, 80));
-    blob(&p, at(0.04, 0.90 + 0.04 * (t * 0.9).cos()), m * 0.40, Color32::from_rgba_unmultiplied(255, 70, 150, 70));
-    blob(&p, at(0.45, 0.45), m * 0.35, Color32::from_rgba_unmultiplied(255, 140, 60, 26));
+    // forge embers: warm glows with a cool steel-blue counterpoint
+    blob(&p, at(0.16 + 0.05 * t.sin(), 0.10 + 0.04 * (t * 1.3).cos()), m * 0.62, Color32::from_rgba_unmultiplied(255, 120, 30, 78));
+    blob(&p, at(0.94 + 0.04 * (t * 0.8).cos(), 0.20 + 0.05 * t.sin()), m * 0.50, Color32::from_rgba_unmultiplied(170, 40, 60, 80));
+    blob(&p, at(0.62 + 0.05 * (t * 1.1).sin(), 0.98), m * 0.58, Color32::from_rgba_unmultiplied(40, 110, 170, 70));
+    blob(&p, at(0.04, 0.92 + 0.04 * (t * 0.9).cos()), m * 0.40, Color32::from_rgba_unmultiplied(255, 70, 20, 50));
+    blob(&p, at(0.45, 0.45), m * 0.35, Color32::from_rgba_unmultiplied(255, 170, 60, 22));
 }
