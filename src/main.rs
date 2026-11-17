@@ -808,11 +808,12 @@ impl eframe::App for App {
         egui::SidePanel::left("nav")
             .resizable(false)
             .exact_width(290.0)
-            .frame(theme::glass(theme::SIDEBAR, 26).outer_margin(egui::Margin::same(10)).inner_margin(egui::Margin { left: 10, right: 22, top: 18, bottom: 10 }))
+            .show_separator_line(false)
+            .frame(egui::Frame::new().inner_margin(egui::Margin { left: 10, right: 2, top: 10, bottom: 10 }))
             .show(ctx, |ui| {
-                let pr = ui.max_rect().expand2(egui::vec2(10.0, 0.0));
-                let pr = egui::Rect::from_min_max(egui::pos2(pr.left(), pr.top() - 18.0), egui::pos2(pr.right(), pr.bottom() + 10.0));
-                theme::sheen(&ui.painter().with_clip_rect(pr.expand(2.0)), pr, 26.0);
+                // the glass sheet is drawn fully inside the panel so nothing gets clipped
+                let gr = theme::glass(theme::SIDEBAR, 26).inner_margin(egui::Margin { left: 10, right: 10, top: 18, bottom: 10 }).show(ui, |ui| {
+                ui.set_min_size(ui.available_size());
                 ui.horizontal(|ui| {
                     ui.add_space(6.0);
                     let tex = ui.ctx().data_mut(|d| d.get_temp::<egui::TextureHandle>(egui::Id::new("appicon"))).unwrap_or_else(|| {
@@ -873,6 +874,8 @@ impl eframe::App for App {
                         theme::sheen(&p, rr, 12.0);
                     }
                 });
+                });
+                theme::sheen(ui.painter(), gr.response.rect, 26.0);
             });
 
         // ---------- detail ----------
