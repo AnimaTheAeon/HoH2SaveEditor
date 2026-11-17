@@ -814,10 +814,17 @@ impl eframe::App for App {
                 let pr = egui::Rect::from_min_max(egui::pos2(pr.left(), pr.top() - 18.0), egui::pos2(pr.right(), pr.bottom() + 10.0));
                 theme::sheen(&ui.painter().with_clip_rect(pr.expand(2.0)), pr, 26.0);
                 ui.horizontal(|ui| {
-                    ui.add_space(8.0);
+                    ui.add_space(6.0);
+                    let tex = ui.ctx().data_mut(|d| d.get_temp::<egui::TextureHandle>(egui::Id::new("appicon"))).unwrap_or_else(|| {
+                        let img = egui::ColorImage::from_rgba_unmultiplied([64, 64], include_bytes!("../assets/icon64.rgba"));
+                        let t = ui.ctx().load_texture("appicon", img, egui::TextureOptions::LINEAR);
+                        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("appicon"), t.clone()));
+                        t
+                    });
+                    ui.add(egui::Image::new(&tex).fit_to_exact_size(egui::vec2(44.0, 44.0)));
                     ui.vertical(|ui| {
-                        ui.label(RichText::new("Hammersmith").font(theme::bold(26.0)).color(LABEL));
-                        ui.label(gray("Hammerwatch II Save Editor"));
+                        ui.label(RichText::new("Hammersmith").font(theme::bold(24.0)).color(LABEL));
+                        ui.label(gray("Hammerwatch II Save Editor").size(12.5));
                     });
                 });
                 ui.add_space(8.0);
