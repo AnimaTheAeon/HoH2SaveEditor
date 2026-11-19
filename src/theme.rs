@@ -26,6 +26,7 @@ pub const ACCENT: Color32 = Color32::from_rgb(255, 172, 64);
 pub const ACCENT_FILL: Color32 = Color32::from_rgb(196, 104, 22);
 pub const GREEN: Color32 = Color32::from_rgb(48, 209, 88);
 pub const RED: Color32 = Color32::from_rgb(255, 69, 58);
+pub const WARN: Color32 = Color32::from_rgb(255, 204, 0);
 pub const ORANGE: Color32 = Color32::from_rgb(255, 159, 10);
 pub const YELLOW: Color32 = Color32::from_rgb(255, 214, 10);
 pub const PURPLE: Color32 = Color32::from_rgb(191, 90, 242);
@@ -86,7 +87,7 @@ pub fn apply(ctx: &egui::Context) {
     let mut s = (*ctx.style()).clone();
     let mut v = egui::Visuals::dark();
     v.panel_fill = Color32::TRANSPARENT;
-    v.window_fill = Color32::from_rgba_unmultiplied(34, 34, 42, 236);
+    v.window_fill = Color32::from_rgba_unmultiplied(30, 28, 34, 252);
     v.window_stroke = Stroke::new(1.0f32, EDGE);
     v.window_corner_radius = CornerRadius::same(14);
     v.window_shadow = egui::Shadow { offset: [0, 12], blur: 40, spread: 0, color: Color32::from_black_alpha(160) };
@@ -204,6 +205,52 @@ pub fn stepper(ui: &mut Ui) -> i32 {
         }
     }
     d
+}
+
+/// Icon for a sidebar tile: a letter glyph, or a sprite cut from a game sheet.
+#[derive(Clone, Copy)]
+pub enum Icon<'a> {
+    Glyph(&'a str, Color32),
+    Sprite(egui::TextureId, Rect, Color32),
+}
+
+/// Rounded tile showing a pixel-art sprite from the game over a tinted backing.
+pub fn sprite_tile(ui: &mut Ui, tex: egui::TextureId, uv: Rect, col: Color32, size: f32) {
+    let (rect, _) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
+    let p = ui.painter();
+    let r = CornerRadius::same((size * 0.24) as u8);
+    p.rect_filled(rect, r, col.gamma_multiply(0.28));
+    p.rect_stroke(rect, r, Stroke::new(1.0f32, col.gamma_multiply(0.55)), egui::StrokeKind::Inside);
+    // pixel art: draw at a whole-number scale so every pixel stays sharp
+    let ts = tex_size(ui, tex);
+    let src = vec2(uv.width() * ts.x, uv.height() * ts.y);
+    let scale = ((size - 4.0) / src.x.max(src.y)).floor().max(1.0);
+    let img = Rect::from_center_size(rect.center(), src * scale);
+    p.with_clip_rect(rect.shrink(1.0)).image(tex, img, uv, Color32::WHITE);
+}
+
+fn tex_size(ui: &Ui, tex: egui::TextureId) -> egui::Vec2 {
+    ui.ctx().tex_manager().read().meta(tex).map(|m| vec2(m.size[0] as f32, m.size[1] as f32)).unwrap_or(vec2(128.0, 128.0))
+}
+
+/// Small circled "i" that explains a field on hover.
+pub fn info(ui: &mut Ui, text: &str) {
+    let (rect, resp) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+    let p = ui.painter();
+    let col = if resp.hovered() { ACCENT } else { GRAY3 };
+    p.circle_stroke(rect.center(), 6.5, Stroke::new(1.2f32, col));
+    p.text(rect.center() + vec2(0.0, 0.5), egui::Align2::CENTER_CENTER, "i", bold(10.0), col);
+    resp.on_hover_ui(|ui| {
+        ui.set_max_width(280.0);
+        ui.label(text);
+    });
+}
+
+pub fn icon_tile(ui: &mut Ui, icon: Icon) {
+    match icon {
+        Icon::Glyph(g, c) => tile(ui, g, c),
+        Icon::Sprite(t, uv, c) => sprite_tile(ui, t, uv, c, 36.0),
+    }
 }
 
 /// Rounded-square icon tile with a white glyph.
@@ -400,4 +447,20 @@ pub fn background(ctx: &egui::Context) {
     blob(&p, at(0.62 + 0.05 * (t * 1.1).sin(), 0.98), m * 0.58, Color32::from_rgba_unmultiplied(40, 110, 170, 70));
     blob(&p, at(0.04, 0.92 + 0.04 * (t * 0.9).cos()), m * 0.40, Color32::from_rgba_unmultiplied(255, 70, 20, 50));
     blob(&p, at(0.45, 0.45), m * 0.35, Color32::from_rgba_unmultiplied(255, 170, 60, 22));
+}
+
+/// Rounded banner with a coloured dot, for important notices.
+pub fn pill(ui: &mut Ui, text: &str, col: Color32) {
+    Frame::new()
+        .fill(col.gamma_multiply(0.14))
+        .stroke(Stroke::new(1.0f32, col.gamma_multiply(0.5)))
+        .corner_radius(CornerRadius::same(14))
+        .inner_margin(Margin::symmetric(14, 7))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
+                ui.painter().circle_filled(r.center(), 4.5, col);
+                ui.add(egui::Label::new(RichText::new(text).color(col).size(13.5)).wrap());
+            });
+        });
 }

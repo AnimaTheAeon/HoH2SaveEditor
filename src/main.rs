@@ -1,4 +1,5 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
+mod gamedata;
 mod hps;
 mod names;
 mod sval;
@@ -65,6 +66,170 @@ struct App {
     filter: String,
     filter2: String,
     show_backups: bool,
+    art: Option<Art>,
+    game_running: bool,
+    game_check: f64,
+    confirm: Option<Pending>,
+    allow_close: bool,
+}
+
+/// Something that would throw away unsaved edits; asked about first.
+#[derive(Clone)]
+enum Pending {
+    Open(PathBuf),
+    Rescan,
+    RestoreZip(PathBuf),
+    RestoreSlot(PathBuf),
+    Close,
+}
+
+/// Sprite sheets taken from the player's own game install at runtime.
+struct Art {
+    classes: egui::TextureHandle, // players/class_showcase.png, 32x32 per class
+    town: egui::TextureHandle,    // gui/icons_town.png, 24x24 per icon
+    sheets: std::collections::HashMap<String, egui::TextureHandle>,
+}
+
+impl Art {
+    /// The game's own icon for an item, trinket or building (by id hash).
+    fn icon(&self, names: Option<&Names>, h: u32) -> Option<(egui::TextureId, egui::Rect)> {
+        let i = names?.icons.get(&h)?;
+        let t = self.sheets.get(&i.sheet)?;
+        let [w, hh] = t.size();
+        let (w, hh) = (w as f32, hh as f32);
+        let r = i.rect;
+        Some((t.id(), egui::Rect::from_min_size(egui::pos2(r[0] / w, r[1] / hh), egui::vec2(r[2] / w, r[3] / hh))))
+    }
+}
+
+/// Is Heroes of Hammerwatch II running? (Windows process list; nothing is read from the game.)
+fn game_is_running() -> bool {
+    #[cfg(windows)]
+    {
+        #[repr(C)]
+        struct Entry {
+            size: u32,
+            usage: u32,
+            pid: u32,
+            heap: usize,
+            module: u32,
+            threads: u32,
+            parent: u32,
+            prio: i32,
+            flags: u32,
+            exe: [u16; 260],
+        }
+        unsafe extern "system" {
+            fn CreateToolhelp32Snapshot(flags: u32, pid: u32) -> isize;
+            fn Process32FirstW(snap: isize, e: *mut Entry) -> i32;
+            fn Process32NextW(snap: isize, e: *mut Entry) -> i32;
+            fn CloseHandle(h: isize) -> i32;
+        }
+        unsafe {
+            let snap = CreateToolhelp32Snapshot(0x2, 0);
+            if snap == -1 {
+                return false;
+            }
+            let mut e: Entry = std::mem::zeroed();
+            e.size = std::mem::size_of::<Entry>() as u32;
+            let mut found = false;
+            let mut ok = Process32FirstW(snap, &mut e);
+            while ok != 0 {
+                let len = e.exe.iter().position(|&c| c == 0).unwrap_or(260);
+                if String::from_utf16_lossy(&e.exe[..len]).eq_ignore_ascii_case("HWR2.exe") {
+                    found = true;
+                    break;
+                }
+                ok = Process32NextW(snap, &mut e);
+            }
+            CloseHandle(snap);
+            found
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("HAMMERSMITH_FAKE_GAME").is_some()
+    }
+}
+
+fn sheet_uv(sheet: f32, x: f32, y: f32, s: f32) -> egui::Rect {
+    egui::Rect::from_min_size(egui::pos2(x / sheet, y / sheet), egui::vec2(s / sheet, s / sheet))
+}
+
+/// Where each class's figure sits on the game's class sheet.
+fn class_uv(class: &str) -> Option<egui::Rect> {
+    let (x, y) = match class.split('_').next().unwrap_or("") {
+        "wizard" => (0.0, 0.0),
+        "warrior" => (32.0, 0.0),
+        "ranger" => (64.0, 0.0),
+        "paladin" => (96.0, 0.0),
+        "warlock" => (0.0, 32.0),
+        "rogue" => (32.0, 32.0),
+        "sorcerer" => (64.0, 32.0),
+        "priest" => (0.0, 64.0),
+        _ => return None,
+    };
+    Some(sheet_uv(128.0, x, y, 32.0))
+}
+
+// ---- dates for the save picker (no date library: keeps the exe small) ----
+fn local_offset_secs(utc: i64) -> i64 {
+    #[cfg(windows)]
+    {
+        #[repr(C)]
+        #[derive(Default, Clone, Copy)]
+        struct St { y: u16, m: u16, dow: u16, d: u16, h: u16, mi: u16, s: u16, ms: u16 }
+        unsafe extern "system" {
+            fn SystemTimeToTzSpecificLocalTime(tz: *const u8, utc: *const St, local: *mut St) -> i32;
+        }
+        let (y, mo, d, h, mi, s) = civil(utc);
+        let u = St { y: y as u16, m: mo as u16, dow: 0, d: d as u16, h: h as u16, mi: mi as u16, s: s as u16, ms: 0 };
+        let mut l = St::default();
+        if unsafe { SystemTimeToTzSpecificLocalTime(std::ptr::null(), &u, &mut l) } != 0 {
+            let lt = days_from_civil(l.y as i64, l.m as i64, l.d as i64) * 86400 + l.h as i64 * 3600 + l.mi as i64 * 60 + l.s as i64;
+            return lt - utc;
+        }
+        0
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = utc;
+        std::env::var("HAMMERSMITH_TZ_MIN").ok().and_then(|v| v.parse::<i64>().ok()).unwrap_or(0) * 60
+    }
+}
+#[cfg_attr(not(windows), allow(dead_code))]
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * ((m + 9) % 12) + 2) / 5 + d - 1;
+    era * 146097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719468
+}
+fn civil(t: i64) -> (i64, i64, i64, i64, i64, i64) {
+    let (days, secs) = (t.div_euclid(86400), t.rem_euclid(86400));
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (yoe + era * 400 + if m <= 2 { 1 } else { 0 }, m, d, secs / 3600, secs / 60 % 60, secs % 60)
+}
+/// "Oct 18, 11:13 AM" in the player's local time.
+/// Save date for the picker; adds seconds when two saves share the same minute.
+fn when(files: &[(PathBuf, u64)], t: u64) -> String {
+    let base = friendly_time(t, false);
+    if files.iter().filter(|(_, u)| friendly_time(*u, false) == base).count() > 1 { friendly_time(t, true) } else { base }
+}
+
+fn friendly_time(ms: u64, secs: bool) -> String {
+    let utc = (ms / 1000) as i64;
+    let (_, m, d, h, mi, s) = civil(utc + local_offset_secs(utc));
+    const MON: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let (h12, ap) = match h { 0 => (12, "AM"), 1..=11 => (h, "AM"), 12 => (12, "PM"), _ => (h - 12, "PM") };
+    if secs { format!("{} {d}, {h12}:{mi:02}:{s:02} {ap}", MON[(m - 1) as usize]) } else { format!("{} {d}, {h12}:{mi:02} {ap}", MON[(m - 1) as usize]) }
 }
 
 fn steam_roots() -> Vec<PathBuf> {
@@ -174,6 +339,11 @@ impl App {
             filter: String::new(),
             filter2: String::new(),
             show_backups: false,
+            art: None,
+            game_running: false,
+            game_check: f64::NEG_INFINITY,
+            confirm: None,
+            allow_close: false,
         };
         a.scan();
         a
@@ -184,10 +354,59 @@ impl App {
         self.status_t = f64::NAN; // stamped with the frame time on next paint
     }
 
-    fn scan(&mut self) {
+    fn dirty(&self) -> bool {
+        self.save.as_ref().map(|s| s.town.dirty || s.heroes.iter().any(|h| h.data.dirty)).unwrap_or(false)
+    }
+
+    /// Ask before anything that would throw away unsaved edits.
+    fn request(&mut self, p: Pending) {
+        if self.dirty() {
+            self.confirm = Some(p);
+        } else {
+            self.perform(p);
+        }
+    }
+
+    fn perform(&mut self, p: Pending) {
+        if self.game_running && matches!(p, Pending::RestoreZip(_) | Pending::RestoreSlot(_)) {
+            self.msg("Close Heroes of Hammerwatch II before restoring a backup; the game would overwrite it.", true);
+            return;
+        }
+        match p {
+            Pending::Open(p) => self.open(p),
+            Pending::Rescan => {
+                self.names = None;
+                self.art = None;
+                self.scan();
+            }
+            Pending::RestoreZip(b) => match self.restore_zip(&b) {
+                Ok(n) => {
+                    self.scan();
+                    self.msg(format!("Restored {n} save slots from {}", b.file_name().unwrap().to_string_lossy()), false);
+                }
+                Err(e) => self.msg(format!("Restore failed: {e}"), true),
+            },
+            Pending::RestoreSlot(b) => {
+                if let Some(f) = self.file.clone() {
+                    let r = std::fs::read(&b).map_err(|e| e.to_string()).and_then(|d| Save::parse(&d).map(|_| d)).and_then(|d| std::fs::write(&f, d).map_err(|e| e.to_string()));
+                    match r {
+                        Ok(()) => {
+                            self.refresh_list();
+                            self.open(f.clone());
+                            self.msg(format!("Restored {}", b.file_name().unwrap().to_string_lossy()), false);
+                        }
+                        Err(e) => self.msg(format!("Restore failed: {e}"), true),
+                    }
+                }
+            }
+            Pending::Close => self.allow_close = true,
+        }
+    }
+
+    /// Re-read the list of save files and their dates without reopening anything.
+    fn refresh_list(&mut self) {
         self.files.clear();
-        let dir = PathBuf::from(&self.dir);
-        if let Ok(rd) = std::fs::read_dir(&dir) {
+        if let Ok(rd) = std::fs::read_dir(PathBuf::from(&self.dir)) {
             for e in rd.flatten() {
                 let p = e.path();
                 if p.extension().map(|x| x == "hps").unwrap_or(false) {
@@ -197,9 +416,22 @@ impl App {
             }
         }
         self.files.sort_by(|a, b| b.1.cmp(&a.1));
+    }
+
+    fn save_label(&self, p: &Path) -> String {
+        match self.files.iter().position(|(f, _)| f == p) {
+            Some(0) => format!("latest save ({})", when(&self.files, self.files[0].1)),
+            Some(i) => format!("earlier save ({})", when(&self.files, self.files[i].1)),
+            None => p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
+        }
+    }
+
+    fn scan(&mut self) {
+        let dir = PathBuf::from(&self.dir);
+        self.refresh_list();
         if self.files.is_empty() {
             self.save = None;
-            self.msg("No .hps saves found. Enter your saves folder (…\\Steam\\userdata\\<id>\\619820\\remote\\saves).", true);
+            self.msg("No saves found in that folder. Open Settings and point it at Steam\\userdata\\<your id>\\619820\\remote\\saves.", true);
             return;
         }
         let newest = self.files[0].0.clone();
@@ -222,8 +454,9 @@ impl App {
             Ok(s) => {
                 let run = s.has_run();
                 self.save = Some(s);
+                let label = self.save_label(&p);
                 self.msg(
-                    format!("Loaded {}{}", p.file_name().unwrap().to_string_lossy(), if run { " · a dungeon run is in progress (its level data is left untouched)" } else { "" }),
+                    format!("Opened your {label}{}", if run { ". A dungeon run is in progress; its level data is left untouched." } else { "" }),
                     false,
                 );
                 self.file = Some(p);
@@ -276,8 +509,13 @@ impl App {
         Ok(entries.len())
     }
 
-    fn write(&mut self) {
-        let (Some(path), Some(save)) = (self.file.clone(), self.save.as_mut()) else { return };
+    /// Save to disk. Returns true on success.
+    fn write(&mut self) -> bool {
+        if self.game_running {
+            self.msg("Close Heroes of Hammerwatch II before saving; the game would overwrite your changes.", true);
+            return false;
+        }
+        let (Some(path), Some(save)) = (self.file.clone(), self.save.as_mut()) else { return false };
         let res = (|| -> Result<PathBuf, String> {
             let old = std::fs::read(&path).map_err(|e| format!("read: {e}"))?;
             let bdir = backup_dir(path.parent().unwrap());
@@ -307,10 +545,15 @@ impl App {
         })();
         match res {
             Ok(b) => {
+                self.refresh_list(); // the saved file is now the newest
                 self.open(path.clone());
-                self.msg(format!("Saved & verified (checksum recomputed) · backup: {}", b.file_name().unwrap().to_string_lossy()), false);
+                self.msg(format!("Saved and verified. Backup: {}", b.file_name().unwrap().to_string_lossy()), false);
+                true
             }
-            Err(e) => self.msg(format!("Save failed: {e}"), true),
+            Err(e) => {
+                self.msg(format!("Save failed: {e}"), true);
+                false
+            }
         }
     }
 }
@@ -341,6 +584,10 @@ fn pretty_id(s: &str) -> String {
         let mut c = w.chars();
         c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
     }).collect::<Vec<_>>().join(" ")
+}
+
+pub fn cap_words(s: &str) -> String {
+    s.split(['_', '-']).filter(|w| !w.is_empty()).map(|w| { let mut c = w.chars(); c.next().map(|x| x.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default() }).collect::<Vec<_>>().join(" ")
 }
 
 fn class_style(class: &str) -> (&'static str, Color32) {
@@ -375,10 +622,67 @@ fn qual_name(q: i32) -> &'static str {
     QUAL.iter().find(|x| x.0 == q).map(|x| x.1).unwrap_or("?")
 }
 
+/// Quality a modifier needs to sit in slot `n` (the game's IndexToQuality(n + 2);
+/// the first slot also takes Common modifiers).
+fn slot_ok(n: usize, q: i32) -> bool {
+    if n == 0 { q == 1 || q == 2 } else { q == 1 << (n + 1) }
+}
+
+/// Would the game accept modifier `m` in slot `slot` of this item, next to `others`?
+/// Mirrors its roll rules: matching tags, one per exclusive group, one skill
+/// modifier per item, and the modifier's item-level range.
+fn mod_ok(n: &Names, base: u32, ilvl: i32, slot: usize, others: &[u32], m: &names::ModDef) -> bool {
+    let Some(b) = n.bases.get(&base) else { return false };
+    if !slot_ok(slot, m.quality) || ilvl < m.ilvl || ilvl > m.ilvl_max || !m.tags.iter().any(|t| b.tags.contains(t)) {
+        return false;
+    }
+    let mut skill = b.skill;
+    for o in others {
+        let Some(od) = n.mods.get(o) else { continue };
+        if *o == hps::hash_string(&m.id) || (m.exclusive != 0 && od.exclusive == m.exclusive) {
+            return false;
+        }
+        skill |= od.skill;
+    }
+    !(skill && m.skill)
+}
+
+/// Short explanations for fields whose meaning isn't obvious.
+fn tip_for(label: &str) -> Option<&'static str> {
+    Some(match label.trim() {
+        "New Game+" => "How many times this has been through New Game+. Each tier makes enemies tougher and raises the hero level cap by 5.",
+        "Level" => "Changing Level also sets Experience to the start of that level. The cap is 20 plus 5 per New Game+ tier.",
+        "Experience" => "Total experience earned. Changing it also updates Level to match.",
+        "Unspent stat points" => "Attribute points waiting to be spent in game. Raising the level here doesn't add any, so add them here if you want them.",
+        "Unspent skill points" => "Skill points waiting to be spent in game.",
+        "Rerolls used" => "How many rerolls this hero has used. Lowering it gives them back.",
+        "Dash charges" => "How many dashes the hero can do in a row before waiting for a recharge.",
+        "Valor" => "Valor this hero has earned.",
+        "Item level" => "Sets the item's power and which modifiers can roll on it. Usually close to the hero's level.",
+        "Upgrade level" => "Times the item has been upgraded at the blacksmith (the +N on its name).",
+        "Quality" => "Common to Legendary decides how many modifiers an item holds (0 to 4). Lowering it removes extra modifiers.",
+        "Modifiers" => "Only modifiers the game itself could roll on this item are offered: matching item type, item level in range, one per group, and at most one skill modifier.",
+        "Blueprints unlocked" => "Blueprints let shops and the forge offer modifiers, trinkets, drinks, food and dyes. Unlock All matches the game's own unlock-all cheat.",
+        _ => return None,
+    })
+}
+
+/// Row label with its hover tip, if it has one.
+fn label_tip(ui: &mut Ui, label: impl Into<RichText>) {
+    let l: RichText = label.into();
+    let tip = tip_for(l.text());
+    ui.label(l);
+    if let Some(t) = tip {
+        theme::info(ui, t);
+    }
+}
+
 /// Number row: label … [Max] [value] [stepper]
 fn num_row(s: &mut Section, label: &str, v: &mut V, step: bool, max: Option<i32>) -> bool {
     let mut c = false;
-    s.kv(label, |ui| {
+    s.row(|ui| {
+    label_tip(ui, label);
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         if step {
             let d = theme::stepper(ui);
             if d != 0 {
@@ -404,7 +708,39 @@ fn num_row(s: &mut Section, label: &str, v: &mut V, step: bool, max: Option<i32>
             }
         }
     });
+    });
     c
+}
+
+/// Experience needed to finish level `l` (the game's LevelExperience, in f32 like the game).
+fn level_xp(l: i32) -> i64 {
+    if l <= 0 { 0 } else { (2000.0f32 * (l as f32).powf(2.2)) as i64 }
+}
+
+/// The level a given amount of experience puts a hero at.
+fn level_for_xp(xp: i64, cap: i32) -> i32 {
+    let mut l = 1;
+    while l < cap && xp >= level_xp(l) {
+        l += 1;
+    }
+    l
+}
+
+fn as_i64(v: &V) -> i64 {
+    match v {
+        V::Int(i) => *i as i64,
+        V::Long(i) => *i,
+        V::Float(f) => *f as i64,
+        _ => 0,
+    }
+}
+
+fn set_num(v: &mut V, x: i64) {
+    *v = match v {
+        V::Long(_) => V::Long(x),
+        V::Float(_) => V::Float(x as f32),
+        _ => V::Int(x.clamp(0, i32::MAX as i64) as i32),
+    };
 }
 
 fn picker(s: &mut Section, names: &Names, kind: Kind, filter: &mut String, hint: &str) -> Option<String> {
@@ -436,24 +772,31 @@ fn picker(s: &mut Section, names: &Names, kind: Kind, filter: &mut String, hint:
 
 /// Equipment list with expandable rows.
 /// Item: [quality, baseHash, intensity, ilvl, upgrade, colorA, colorB, mods…]
-fn gear_rows(s: &mut Section, items: &mut Vec<V>, names: Option<&Names>, salt: &str, equipped: bool) -> bool {
+fn gear_rows(s: &mut Section, items: &mut Vec<V>, names: Option<&Names>, art: Option<&Art>, salt: &str, equipped: bool) -> bool {
     let mut c = false;
     let mut kill = None;
     for (i, it) in items.iter_mut().enumerate() {
-        let Some(a) = it.arr_mut().filter(|a| a.len() >= 5) else {
+        let Some(a) = it.arr_mut().filter(|a| a.len() >= 7) else {
             s.row(|ui| ui.label(gray(if matches!(it, V::Null) { "Empty slot" } else { "Unrecognised item" })));
             continue;
         };
         let id = egui::Id::new((salt, i));
         let open = s.ui.data(|d| d.get_temp::<bool>(id).unwrap_or(false));
         let q = a[0].int().unwrap_or(0) as i32;
-        let (name, base) = split_label(&names_label(names, a[1].int().unwrap_or(0)));
-        let mods: Vec<String> = a.iter().skip(7).map(|m| pretty_id(&split_label(&names_label(names, m.int().unwrap_or(0))).0)).collect();
-        let clicked = s.row(|ui| {
+        let base = a[1].int().unwrap_or(0) as u32;
+        let (name, base_id) = split_label(&names_label(names, base as i64));
+        let mod_ids: Vec<u32> = a.iter().skip(7).map(|m| m.int().unwrap_or(0) as u32).collect();
+        let mod_name = |h: u32| names.and_then(|n| n.mods.get(&h)).map(|d| d.name.clone()).unwrap_or_else(|| pretty_id(&split_label(&names_label(names, h as i64)).0));
+        let icon = art.and_then(|ar| ar.icon(names, base));
+        let clicked = s.row_indent(if icon.is_some() { 62.0 } else { 16.0 }, |ui| {
+            if let Some((t, uv)) = icon {
+                theme::sprite_tile(ui, t, uv, qual_color(q), 36.0);
+                ui.add_space(4.0);
+            }
             ui.vertical(|ui| {
                 ui.label(semibold(&name, 15.0).color(qual_color(q)));
-                ui.label(gray(format!("{} · ilvl {} · +{}{}", qual_name(q), a[3].int().unwrap_or(0), a[4].int().unwrap_or(0),
-                    if mods.is_empty() { String::new() } else { format!(" · {} mods", mods.len()) })).size(12.5));
+                ui.label(gray(format!("{} · Item level {} · +{}{}", qual_name(q), a[3].int().unwrap_or(0), a[4].int().unwrap_or(0),
+                    match mod_ids.len() { 0 => String::new(), 1 => " · 1 modifier".into(), n => format!(" · {n} modifiers") })).size(12.5));
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| theme::chevron(ui, open));
             let full = egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), ui.min_rect().y_range());
@@ -462,32 +805,119 @@ fn gear_rows(s: &mut Section, items: &mut Vec<V>, names: Option<&Names>, salt: &
         if clicked {
             s.ui.data_mut(|d| d.insert_temp(id, !open));
         }
-        if open {
-            s.kv(gray("    Quality"), |ui| {
+        if !open {
+            continue;
+        }
+        s.row(|ui| {
+            ui.add_space(16.0);
+            label_tip(ui, gray("Quality"));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 egui::ComboBox::from_id_salt(id.with("q")).selected_text(RichText::new(qual_name(q)).color(qual_color(q))).show_ui(ui, |ui| {
                     for (v, n) in QUAL {
-                        if ui.selectable_label(q == v, RichText::new(n).color(qual_color(v))).clicked() {
+                        if ui.selectable_label(q == v, RichText::new(n).color(qual_color(v))).clicked() && v != q {
                             a[0] = V::Int(v);
+                            // the regular qualities hold a fixed number of modifiers
+                            let cap = gamedata::mods_per_quality(v);
+                            if v <= 16 && a.len() > 7 + cap {
+                                a.truncate(7 + cap);
+                            }
                             c = true;
                         }
                     }
                 });
             });
-            c |= num_row(s, "    Item level", &mut a[3], true, None);
-            c |= num_row(s, "    Upgrade level", &mut a[4], true, None);
-            if !mods.is_empty() {
-                s.kv(gray("    Modifiers"), |ui| ui.label(gray(mods.join(", "))));
-            }
-            if !base.is_empty() {
-                s.kv(gray("    Base item"), |ui| ui.label(gray(&base)));
-            }
+        });
+        c |= num_row(s, "    Item level", &mut a[3], true, None);
+        c |= num_row(s, "    Upgrade level", &mut a[4], true, None);
+        // modifiers
+        let q = a[0].int().unwrap_or(0) as i32;
+        let cap = gamedata::mods_per_quality(q);
+        let ilvl = a[3].int().unwrap_or(0) as i32;
+        s.row(|ui| {
+            ui.add_space(16.0);
+            label_tip(ui, gray("Modifiers"));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(gray(if q <= 16 { format!("{} of {cap}", mod_ids.len()) } else { format!("{}", mod_ids.len()) }));
+            });
+        });
+        // Each slot only takes modifiers of its own quality, so a modifier is
+        // swapped in place; only the last one can be removed (removing one in
+        // the middle would shift the rest into slots they don't fit).
+        let mut drop_mod = None;
+        let mut swap: Option<(usize, u32)> = None;
+        let last = mod_ids.len().saturating_sub(1);
+        for (k, h) in mod_ids.iter().enumerate() {
+            let nm = mod_name(*h);
+            let others: Vec<u32> = mod_ids.iter().enumerate().filter(|(j, _)| *j != k).map(|(_, x)| *x).collect();
+            let mut alts: Vec<&names::ModDef> = names
+                .map(|n| n.mods.values().filter(|m| hps::hash_string(&m.id) != *h && mod_ok(n, base, ilvl, k, &others, m)).collect())
+                .unwrap_or_default();
+            alts.sort_by(|x, y| x.name.cmp(&y.name));
+            let col = names.and_then(|n| n.mods.get(h)).map(|d| qual_color(d.quality)).unwrap_or(LABEL);
             s.row(|ui| {
-                ui.add_space(16.0);
-                if theme::text_btn(ui, if equipped { "Unequip & Delete" } else { "Delete Item" }, RED, false, true) {
-                    kill = Some(i);
+                ui.add_space(32.0);
+                if alts.is_empty() {
+                    ui.add(egui::Label::new(RichText::new(&nm).color(col).size(13.5)).truncate());
+                } else {
+                    egui::ComboBox::from_id_salt(id.with(("mod", k))).width(400.0).height(420.0)
+                        .selected_text(RichText::new(&nm).color(col).size(13.5))
+                        .show_ui(ui, |ui| {
+                            ui.label(gray("Swap for:").size(12.0));
+                            for m in &alts {
+                                if ui.selectable_label(false, RichText::new(&m.name).color(qual_color(m.quality))).clicked() {
+                                    swap = Some((k, hps::hash_string(&m.id)));
+                                }
+                            }
+                        });
                 }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if k == last && theme::text_btn(ui, "Remove", RED, false, true) {
+                        drop_mod = Some(k);
+                    }
+                });
             });
         }
+        if let Some((k, h)) = swap {
+            a[7 + k] = V::Int(h as i32);
+            c = true;
+        }
+        if let Some(k) = drop_mod {
+            a.remove(7 + k);
+            c = true;
+        }
+        if let Some(n) = names {
+            if q <= 16 && mod_ids.len() < cap && drop_mod.is_none() && swap.is_none() {
+                let slot = mod_ids.len();
+                let mut opts: Vec<&names::ModDef> = n.mods.values().filter(|m| mod_ok(n, base, ilvl, slot, &mod_ids, m)).collect();
+                opts.sort_by(|x, y| x.name.cmp(&y.name));
+                s.row(|ui| {
+                    ui.add_space(32.0);
+                    if opts.is_empty() {
+                        ui.label(gray(if n.bases.contains_key(&base) { "No other modifiers fit this item at this item level" } else { "This item's modifiers can't be looked up" }).size(13.0));
+                        return;
+                    }
+                    egui::ComboBox::from_id_salt(id.with("addmod")).width(330.0).height(420.0)
+                        .selected_text(RichText::new(format!("Add a modifier ({} fit)", opts.len())).color(ACCENT))
+                        .show_ui(ui, |ui| {
+                            for m in &opts {
+                                if ui.selectable_label(false, RichText::new(&m.name).color(qual_color(m.quality))).clicked() {
+                                    a.push(V::Int(hps::hash_string(&m.id) as i32));
+                                    c = true;
+                                }
+                            }
+                        });
+                });
+            }
+        }
+        if !base_id.is_empty() {
+            s.kv(gray("    Base item"), |ui| ui.label(gray(&base_id)));
+        }
+        s.row(|ui| {
+            ui.add_space(16.0);
+            if theme::text_btn(ui, if equipped { "Unequip & Delete" } else { "Delete Item" }, RED, false, true) {
+                kill = Some(i);
+            }
+        });
     }
     if let Some(i) = kill {
         if equipped {
@@ -502,7 +932,7 @@ fn gear_rows(s: &mut Section, items: &mut Vec<V>, names: Option<&Names>, salt: &
 
 // ---------------- views ----------------
 
-fn town_view(ui: &mut Ui, save: &mut Save, names: Option<&Names>) -> bool {
+fn town_view(ui: &mut Ui, save: &mut Save, names: Option<&Names>, art: Option<&Art>) -> bool {
     let mut ch = false;
     theme::large_title(ui, "Town", &save.town_name.clone());
     section(ui, Some("Name"), None, |s| {
@@ -529,9 +959,27 @@ fn town_view(ui: &mut Ui, save: &mut Save, names: Option<&Names>) -> bool {
         if let Some(v) = t.get_mut("ngp") {
             c |= num_row(s, "New Game+", v, true, None);
         }
-        if let Some(bp) = t.get("blueprints").and_then(|b| b.arr()) {
+        if let Some(bp) = t.get_mut("blueprints").and_then(|b| b.arr_mut()) {
+            let have: std::collections::HashSet<u32> = bp.iter().filter_map(|v| v.str()).map(hps::hash_string).collect();
+            let missing: Vec<&String> = names.map(|n| n.blueprint_pool.iter().filter(|(_, h)| !have.contains(h)).map(|(s, _)| s).collect()).unwrap_or_default();
             let n = bp.len();
-            s.kv("Blueprints unlocked", |ui| ui.label(gray(n.to_string())));
+            let mut add = false;
+            s.row(|ui| {
+                label_tip(ui, "Blueprints unlocked");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if !missing.is_empty() && theme::text_btn(ui, "Unlock All", ACCENT, false, true) {
+                        add = true;
+                    }
+                    let total = names.map(|x| x.blueprint_pool.len()).filter(|t| *t > 0);
+                    ui.label(gray(match total { Some(_) if missing.is_empty() => format!("{n} · all unlocked"), Some(_) => format!("{n} · {} to go", missing.len()), None => n.to_string() }));
+                });
+            });
+            if add {
+                let k = missing.len();
+                bp.extend(missing.into_iter().map(|s| V::Str(s.clone())));
+                c = true;
+                s.ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("toast_req"), format!("Unlocked {k} blueprints. Save to keep them.")));
+            }
         }
         if let Some(st) = t.get("town-stash").and_then(|s| s.arr()) {
             let n: usize = st.iter().filter_map(|tab| tab.get("items").and_then(|i| i.arr())).map(|i| i.len()).sum();
@@ -539,12 +987,38 @@ fn town_view(ui: &mut Ui, save: &mut Save, names: Option<&Names>) -> bool {
             s.kv("Town stash", |ui| ui.label(gray(format!("{n} items in {tabs} tab{}", if tabs == 1 { "" } else { "s" }))));
         }
     });
-    section(ui, Some("Buildings"), None, |s| {
-        if let Some(b) = t.get("buildings").and_then(|b| b.arr()) {
-            for x in b {
-                let h = x.get("building-def").and_then(|v| v.int()).unwrap_or(0);
-                let (n, _) = split_label(&names_label(names, h));
-                s.kv(n, |ui| ui.label(RichText::new("Built").color(theme::GREEN)));
+    section(ui, Some("Buildings"), Some("The game normally needs a higher Guild Hall before other buildings can be upgraded. That isn't checked here."), |s| {
+        if let Some(b) = t.get_mut("buildings").and_then(|b| b.arr_mut()) {
+            for x in b.iter_mut() {
+                let h = x.get("building-def").and_then(|v| v.int()).unwrap_or(0) as u32;
+                let def = names.and_then(|n| n.buildings.get(&h));
+                let n = def.map(|d| d.name.clone()).unwrap_or_else(|| split_label(&names_label(names, h as i64)).0);
+                let icon = art.and_then(|a| a.icon(names, h));
+                let max = def.map(|d| d.max_variation);
+                s.row_indent(if icon.is_some() { 62.0 } else { 16.0 }, |ui| {
+                    if let Some((tx, uv)) = icon {
+                        theme::sprite_tile(ui, tx, uv, ACCENT, 36.0);
+                        ui.add_space(4.0);
+                    }
+                    ui.label(&n);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        match (x.get_mut("variation"), max) {
+                            (Some(v), Some(mx)) if matches!(v, V::Int(_)) => {
+                                let cur = v.int().unwrap_or(0) as i32;
+                                let d = theme::stepper(ui);
+                                let nv = (cur + d).clamp(0, mx);
+                                if nv != cur {
+                                    *v = V::Int(nv);
+                                    c = true;
+                                }
+                                ui.label(if nv == mx { RichText::new(format!("Level {} of {} · Max", nv + 1, mx + 1)).color(theme::GREEN) } else { gray(format!("Level {} of {}", nv + 1, mx + 1)) });
+                            }
+                            _ => {
+                                ui.label(RichText::new("Built").color(theme::GREEN));
+                            }
+                        }
+                    });
+                });
             }
         }
     });
@@ -554,7 +1028,7 @@ fn town_view(ui: &mut Ui, save: &mut Save, names: Option<&Names>) -> bool {
     ch | c
 }
 
-fn hero_view(ui: &mut Ui, blk: &mut Block, names: Option<&Names>, filter: &mut String, filter2: &mut String, in_run: bool) -> bool {
+fn hero_view(ui: &mut Ui, blk: &mut Block, names: Option<&Names>, filter: &mut String, filter2: &mut String, in_run: bool, art: Option<&Art>) -> bool {
     if !blk.editable() {
         ui.colored_label(RED, format!("This hero can't be decoded safely: {}", blk.err.clone().unwrap_or_default()));
         return false;
@@ -562,11 +1036,30 @@ fn hero_view(ui: &mut Ui, blk: &mut Block, names: Option<&Names>, filter: &mut S
     let h = blk.val.as_mut().unwrap();
     let mut c = false;
     let class = h.get("class").and_then(|v| v.str()).unwrap_or("?").to_string();
-    let (class_n, _) = split_label(&names.map(|n| n.id_label(&class)).unwrap_or(class.clone()));
+    let class_n = names.map(|n| n.class_name(&class)).unwrap_or_else(|| cap_words(class.split('_').next().unwrap_or("?")));
     let lvl = h.get("level").and_then(|v| v.int()).unwrap_or(1) as i32;
     let title = h.get("name").and_then(|v| v.str()).filter(|s| !s.is_empty()).unwrap_or("Empty Hero Slot").to_string();
-    theme::large_title(ui, &title, &format!("{class_n} · Level {lvl}"));
+    match (art, class_uv(&class)) {
+        (Some(a), Some(uv)) => {
+            ui.horizontal(|ui| {
+                theme::sprite_tile(ui, a.classes.id(), uv, class_style(&class).1, 72.0);
+                ui.add_space(8.0);
+                ui.vertical(|ui| {
+                    ui.add_space(6.0);
+                    theme::large_title(ui, &title, &format!("{class_n} · Level {lvl}"));
+                });
+            });
+        }
+        _ if class == "?" || class.is_empty() => theme::large_title(ui, &title, "No hero yet"),
+        _ => theme::large_title(ui, &title, &format!("{class_n} · Level {lvl}")),
+    }
 
+    if h.get("class").and_then(|v| v.str()).filter(|s| !s.is_empty()).is_none() {
+        section(ui, None, None, |s| {
+            s.row(|ui| ui.label(gray("This slot doesn't have a hero yet. Create one in the game, then come back to edit it.")));
+        });
+        return false;
+    }
     let footer = if in_run { Some("This hero is mid-run. The game may overwrite changes when the run ends.") } else { None };
     section(ui, Some("Profile"), footer, |s| {
         if let Some(V::Str(n)) = h.get_mut("name") {
@@ -587,11 +1080,31 @@ fn hero_view(ui: &mut Ui, blk: &mut Block, names: Option<&Names>, filter: &mut S
             });
         }
     });
-    section(ui, Some("Progression"), Some("Level and Experience should agree. Raising Experience and letting the game level you up is safest."), |s| {
-        for (k, label) in [("level", "Level"), ("experience", "Experience"), ("ngp", "New Game+"), ("bonus-stats", "Unspent stat points"),
+    let ngp = h.get("ngp").and_then(|v| v.int()).unwrap_or(0) as i32;
+    let cap = 20 + 5 * ngp.max(0);
+    let foot = format!("Level and Experience stay in step. This hero's level cap is {cap} (20, plus 5 per New Game+ tier). Levels added here don't grant stat or skill points; add those under Unspent points.");
+    section(ui, Some("Progression"), Some(&foot), |s| {
+        // Level <-> Experience, kept consistent the way the game computes it
+        if h.get("level").is_some() && h.get("experience").is_some() {
+            let mut lv = V::Int(lvl);
+            if num_row(s, "Level", &mut lv, true, None) {
+                let nl = (as_i64(&lv) as i32).clamp(1, cap);
+                if let Some(v) = h.get_mut("level") { *v = V::Int(nl); }
+                if let Some(v) = h.get_mut("experience") { set_num(v, level_xp(nl - 1)); }
+                c = true;
+            }
+            let mut xp = h.get("experience").cloned().unwrap_or(V::Int(0));
+            if num_row(s, "Experience", &mut xp, false, None) {
+                let x = as_i64(&xp).clamp(0, level_xp(cap) - 1);
+                if let Some(v) = h.get_mut("experience") { set_num(v, x); }
+                if let Some(v) = h.get_mut("level") { *v = V::Int(level_for_xp(x, cap)); }
+                c = true;
+            }
+        }
+        for (k, label) in [("ngp", "New Game+"), ("bonus-stats", "Unspent stat points"),
             ("bonus-skills", "Unspent skill points"), ("rerolls-used", "Rerolls used"), ("dash-charges", "Dash charges"), ("valor", "Valor")] {
             if let Some(v) = h.get_mut(k) {
-                c |= num_row(s, label, v, k != "experience", None);
+                c |= num_row(s, label, v, true, None);
             }
         }
     });
@@ -609,9 +1122,9 @@ fn hero_view(ui: &mut Ui, blk: &mut Block, names: Option<&Names>, filter: &mut S
             }
         }
     });
-    section(ui, Some("Equipped"), Some("Tap an item to edit its quality and levels."), |s| {
+    section(ui, Some("Equipped"), Some("Click an item to change its quality, levels and modifiers."), |s| {
         if let Some(a) = h.get_mut("equipped").and_then(|m| m.arr_mut()) {
-            c |= gear_rows(s, a, names, "eq", true);
+            c |= gear_rows(s, a, names, art, "eq", true);
         }
     });
     if !matches!(h.get("equipment"), Some(V::Arr(_))) {
@@ -619,12 +1132,12 @@ fn hero_view(ui: &mut Ui, blk: &mut Block, names: Option<&Names>, filter: &mut S
             *v = V::Arr(vec![]);
         }
     }
-    section(ui, Some("Inventory"), Some("New items are added as Legendary at the hero's level, with no modifiers."), |s| {
+    section(ui, Some("Inventory"), Some("New items are added as Legendary at the hero's level. Open one to give it modifiers."), |s| {
         if let Some(a) = h.get_mut("equipment").and_then(|m| m.arr_mut()) {
             if a.is_empty() {
                 s.row(|ui| ui.label(gray("No items")));
             }
-            c |= gear_rows(s, a, names, "inv", false);
+            c |= gear_rows(s, a, names, art, "inv", false);
             if let Some(n) = names {
                 if let Some(id) = picker(s, n, Kind::Equipment, filter, "Add equipment") {
                     a.push(V::Arr(vec![V::Int(16), V::Int(hps::hash_string(&id) as i32), V::Float(1.0), V::Int(lvl.max(1)), V::Int(0), V::Int(0), V::Int(0)]));
@@ -644,10 +1157,18 @@ fn hero_view(ui: &mut Ui, blk: &mut Block, names: Option<&Names>, filter: &mut S
             for (i, it) in a.iter().enumerate() {
                 let l = it.str().map(|x| names.map(|n| n.id_label(x)).unwrap_or(x.to_string())).unwrap_or_else(|| format!("{it:?}"));
                 let (n, _) = split_label(&l);
-                s.kv(n, |ui| {
-                    if theme::text_btn(ui, "Remove", RED, false, true) {
-                        kill = Some(i);
+                let icon = it.str().and_then(|x| art.and_then(|ar| ar.icon(names, hps::hash_string(x))));
+                s.row_indent(if icon.is_some() { 62.0 } else { 16.0 }, |ui| {
+                    if let Some((tx, uv)) = icon {
+                        theme::sprite_tile(ui, tx, uv, theme::PURPLE, 36.0);
+                        ui.add_space(4.0);
                     }
+                    ui.label(n);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if theme::text_btn(ui, "Remove", RED, false, true) {
+                            kill = Some(i);
+                        }
+                    });
                 });
             }
             if a.is_empty() {
@@ -751,11 +1272,11 @@ fn raw_tree(ui: &mut Ui, label: &str, v: &mut V, names: Option<&Names>, depth: u
 
 /// Sidebar row. Returns (tapped, row rect). The selected highlight is
 /// drawn separately so it can glide between rows.
-fn side_item(ui: &mut Ui, sel: bool, glyph: &str, col: Color32, title: &str, trailing: &str) -> (bool, egui::Rect) {
+fn side_item(ui: &mut Ui, sel: bool, icon: theme::Icon, title: &str, trailing: &str) -> (bool, egui::Rect) {
     let r = egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 6)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
-            theme::tile(ui, glyph, col);
+            theme::icon_tile(ui, icon);
             ui.add(egui::Label::new(RichText::new(title).size(15.0).color(LABEL)).truncate());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(RichText::new(trailing).size(13.5).color(if sel { LABEL.gamma_multiply(0.9) } else { GRAY }));
@@ -763,7 +1284,7 @@ fn side_item(ui: &mut Ui, sel: bool, glyph: &str, col: Color32, title: &str, tra
         });
     });
     let rect = r.response.rect;
-    let resp = theme::click_area(ui, rect, ui.id().with(("side", title, glyph)));
+    let resp = theme::click_area(ui, rect, ui.id().with(("side", title, rect.top() as i32)));
     if resp.hovered() && !sel {
         ui.painter().rect_filled(rect, 12.0, Color32::from_white_alpha(8));
     }
@@ -790,7 +1311,18 @@ impl eframe::App for App {
         if let Some(rx) = &self.names_rx {
             if let Ok(r) = rx.try_recv() {
                 match r {
-                    Ok(n) => self.names = Some(n),
+                    Ok(n) => {
+                        let tex = |key: &str| {
+                            n.images.get(key).map(|(w, h, px)| {
+                                ctx.load_texture(key, egui::ColorImage::from_rgba_unmultiplied([*w, *h], px), egui::TextureOptions::NEAREST)
+                            })
+                        };
+                        if let (Some(classes), Some(town)) = (tex("players/class_showcase.png"), tex("gui/icons_town.png")) {
+                            let sheets = n.images.keys().filter_map(|k| tex(k).map(|t| (k.clone(), t))).collect();
+                            self.art = Some(Art { classes, town, sheets });
+                        }
+                        self.names = Some(n);
+                    }
                     Err(e) => self.msg(format!("Item names unavailable: {e}"), true),
                 }
                 self.names_rx = None;
@@ -801,6 +1333,21 @@ impl eframe::App for App {
         let now = ctx.input(|i| i.time);
         if self.status_t.is_nan() {
             self.status_t = now;
+        }
+        if now - self.game_check > 2.0 {
+            self.game_check = now;
+            self.game_running = game_is_running();
+        }
+        // closing the window with unsaved edits asks first
+        if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close && self.dirty() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.confirm = Some(Pending::Close);
+        }
+        if self.allow_close {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) && self.dirty() {
+            self.write();
         }
 
         // ---------- sidebar ----------
@@ -831,15 +1378,20 @@ impl eframe::App for App {
                 ui.add_space(8.0);
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     let Some(save) = self.save.as_ref() else {
-                        if side_item(ui, self.view == View::Settings, "S", theme::GRAY3, "Settings", "").0 {
+                        if side_item(ui, self.view == View::Settings, theme::Icon::Glyph("S", theme::GRAY3), "Settings", "").0 {
                             self.view = View::Settings;
                         }
                         return;
                     };
                     let hl = ui.painter().add(egui::Shape::Noop);
                     let mut sel_rect = None;
-                    let mut item = |ui: &mut Ui, v: View, g: &str, col: Color32, title: &str, trail: &str, view: &mut View| {
-                        let (clicked, r) = side_item(ui, *view == v, g, col, title, trail);
+                    let art = self.art.as_ref();
+                    let town_icon = |x: f32, y: f32, g: &'static str, c: Color32| match art {
+                        Some(a) => theme::Icon::Sprite(a.town.id(), sheet_uv(256.0, x, y, 24.0), c),
+                        None => theme::Icon::Glyph(g, c),
+                    };
+                    let mut item = |ui: &mut Ui, v: View, icon: theme::Icon, title: &str, trail: &str, view: &mut View| {
+                        let (clicked, r) = side_item(ui, *view == v, icon, title, trail);
                         if *view == v {
                             sel_rect = Some(r);
                         }
@@ -847,7 +1399,7 @@ impl eframe::App for App {
                             *view = v;
                         }
                     };
-                    item(ui, View::Town, "T", theme::GREEN, "Town", if save.town.dirty { "Edited" } else { "" }, &mut self.view);
+                    item(ui, View::Town, town_icon(0.0, 0.0, "T", theme::GREEN), "Town", if save.town.dirty { "Edited" } else { "" }, &mut self.view);
                     side_header(ui, "Heroes");
                     for (i, h) in save.heroes.iter().enumerate() {
                         let v = h.data.val.as_ref();
@@ -855,12 +1407,16 @@ impl eframe::App for App {
                         let lvl = v.and_then(|v| v.get("level")).and_then(|n| n.int()).unwrap_or(0);
                         let class = v.and_then(|v| v.get("class")).and_then(|n| n.str()).unwrap_or("");
                         let (g, col) = class_style(class);
+                        let icon = match (art, class_uv(class)) {
+                            (Some(a), Some(uv)) => theme::Icon::Sprite(a.classes.id(), uv, col),
+                            _ => theme::Icon::Glyph(g, col),
+                        };
                         let trail = if h.data.dirty { "Edited".to_string() } else if lvl > 0 { format!("Lv {lvl}") } else { String::new() };
-                        item(ui, View::Hero(i), g, col, name, &trail, &mut self.view);
+                        item(ui, View::Hero(i), icon, name, &trail, &mut self.view);
                     }
                     side_header(ui, "More");
-                    item(ui, View::Raw, "{}", theme::INDIGO, "Advanced", "", &mut self.view);
-                    item(ui, View::Settings, "S", theme::GRAY3, "Settings", "", &mut self.view);
+                    item(ui, View::Raw, town_icon(24.0, 0.0, "{}", theme::INDIGO), "Advanced", "", &mut self.view);
+                    item(ui, View::Settings, town_icon(96.0, 96.0, "S", theme::GRAY3), "Settings", "", &mut self.view);
                     // selection: a blue glass lozenge that glides to the selected row
                     if let Some(r) = sel_rect {
                         let ctx = ui.ctx().clone();
@@ -883,20 +1439,36 @@ impl eframe::App for App {
         let mut do_discard = false;
         let mut do_backup = false;
         let mut pick = None;
+        let dirty = self.dirty();
+        let running = self.game_running;
         let filter = &mut self.filter;
         let filter2 = &mut self.filter2;
+        let art = self.art.as_ref();
         let raw_sel = &mut self.raw_sel;
-        let dirty = self.save.as_ref().map(|s| s.town.dirty || s.heroes.iter().any(|h| h.data.dirty)).unwrap_or(false);
+
         let mut rescan = false;
         egui::CentralPanel::default().frame(egui::Frame::new().inner_margin(egui::Margin { left: 18, right: 20, top: 14, bottom: 0 })).show(ctx, |ui| {
             // nav bar
             ui.horizontal(|ui| {
-                let cur = self.file.as_ref().map(|p| p.file_name().unwrap().to_string_lossy().to_string()).unwrap_or_else(|| "No save".into());
-                egui::ComboBox::from_id_salt("slot").selected_text(RichText::new(cur).color(ACCENT)).width(150.0).show_ui(ui, |ui| {
-                    for (i, (p, _)) in self.files.iter().enumerate() {
-                        let n = p.file_name().unwrap().to_string_lossy().to_string();
-                        let lbl = if i == 0 { format!("{n}  (newest)") } else { n };
-                        if ui.selectable_label(Some(p) == self.file.as_ref(), lbl).clicked() {
+                // the game keeps ~10 rotating copies of one save (0.hps, 0_1.hps …); show them by date
+                let idx = self.files.iter().position(|(p, _)| Some(p) == self.file.as_ref());
+                let cur = match idx {
+                    Some(0) => format!("Latest save · {}", when(&self.files, self.files[0].1)),
+                    Some(i) => format!("Older save · {}", when(&self.files, self.files[i].1)),
+                    None => "No save loaded".into(),
+                };
+                ui.label(gray("Editing"));
+                egui::ComboBox::from_id_salt("slot").selected_text(RichText::new(cur).color(ACCENT)).width(250.0).height(560.0).show_ui(ui, |ui| {
+                    ui.set_min_width(330.0);
+                    ui.label(gray("Your game keeps your last few saves.\nThe latest one is where you'll continue playing.").size(12.5));
+                    ui.add_space(4.0);
+                    for (i, (p, t)) in self.files.iter().enumerate() {
+                        let mut txt = egui::text::LayoutJob::default();
+                        txt.append(&when(&self.files, *t), 0.0, egui::TextFormat { font_id: egui::FontId::proportional(14.5), color: LABEL, ..Default::default() });
+                        let tag = if i == 0 { "   Latest" } else { "   Earlier" };
+                        txt.append(tag, 0.0, egui::TextFormat { font_id: egui::FontId::proportional(12.5), color: if i == 0 { ACCENT } else { GRAY }, ..Default::default() });
+                        let file = p.file_name().unwrap().to_string_lossy().to_string();
+                        if ui.selectable_label(Some(p) == self.file.as_ref(), txt).on_hover_text(format!("File: {file}")).clicked() {
                             pick = Some(p.clone());
                         }
                     }
@@ -907,7 +1479,7 @@ impl eframe::App for App {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let r = theme::glass(theme::CELL, 255).inner_margin(egui::Margin::symmetric(14, 3)).show(ui, |ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if theme::text_btn(ui, "Save", ACCENT, true, dirty) {
+                    if theme::text_btn(ui, "Save", ACCENT, true, dirty && !running) {
                         do_save = true;
                     }
                     ui.add_space(6.0);
@@ -927,6 +1499,10 @@ impl eframe::App for App {
                     theme::sheen(ui.painter(), r.response.rect, 16.0);
                 });
             });
+            if running {
+                ui.add_space(4.0);
+                theme::pill(ui, "Heroes of Hammerwatch II is running. Close the game before saving; it would overwrite your changes.", theme::WARN);
+            }
             ui.add_space(6.0);
             egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
                 // keep a comfortable reading width and centre it in wide windows
@@ -972,12 +1548,12 @@ impl eframe::App for App {
                         });
                     }
                     (View::Town, Some(save)) => {
-                        town_view(ui, save, names);
+                        town_view(ui, save, names, art);
                     }
                     (View::Hero(i), Some(save)) => {
                         if let Some(h) = save.heroes.get_mut(i) {
                             let run = h.level.is_some();
-                            hero_view(ui, &mut h.data, names, filter, filter2, run);
+                            hero_view(ui, &mut h.data, names, filter, filter2, run, art);
                         }
                     }
                     (View::Raw, Some(save)) => {
@@ -1021,12 +1597,16 @@ impl eframe::App for App {
             });
         });
 
+        if let Some(t) = ctx.data_mut(|d| d.remove_temp::<String>(egui::Id::new("toast_req"))) {
+            self.msg(t, false);
+        }
         if let Some(p) = pick {
-            self.open(p);
+            if Some(&p) != self.file.as_ref() {
+                self.request(Pending::Open(p));
+            }
         }
         if rescan {
-            self.names = None;
-            self.scan();
+            self.request(Pending::Rescan);
         }
         if do_discard {
             if let Some(p) = self.file.clone() {
@@ -1102,23 +1682,71 @@ impl eframe::App for App {
             if let Some(b) = action {
                 self.show_backups = false;
                 if b.extension().map(|e| e == "zip").unwrap_or(false) {
-                    match self.restore_zip(&b) {
-                        Ok(n) => {
-                            self.scan();
-                            self.msg(format!("Restored {n} save slots from {}", b.file_name().unwrap().to_string_lossy()), false);
-                        }
-                        Err(e) => self.msg(format!("Restore failed: {e}"), true),
+                    self.request(Pending::RestoreZip(b));
+                } else {
+                    self.request(Pending::RestoreSlot(b));
+                }
+            }
+        }
+
+        // ---------- unsaved changes sheet ----------
+        if let Some(p) = self.confirm.clone() {
+            let mut choice = 0; // 1 save, 2 don't save, 3 cancel
+            let what = match &p {
+                Pending::Close => "closing",
+                Pending::Open(_) => "switching saves",
+                Pending::Rescan => "rescanning",
+                Pending::RestoreZip(_) | Pending::RestoreSlot(_) => "restoring a backup",
+            };
+            let running = self.game_running;
+            let m = egui::Modal::new(egui::Id::new("unsaved"))
+                .backdrop_color(Color32::from_black_alpha(130))
+                .frame(theme::glass(Color32::from_rgba_unmultiplied(30, 30, 40, 245), 24).inner_margin(egui::Margin::same(22)))
+                .show(ctx, |ui| {
+                    ui.set_width(380.0);
+                    ui.label(RichText::new("Save your changes?").font(theme::bold(18.0)));
+                    ui.add_space(4.0);
+                    ui.label(gray(format!("You have edits that haven't been saved. They'll be lost if you continue {what} without saving.")));
+                    if running {
+                        ui.add_space(4.0);
+                        ui.label(RichText::new("The game is running, so saving is blocked. Close the game first.").color(theme::WARN).size(13.0));
                     }
-                } else if let Some(f) = self.file.clone() {
-                    let r = std::fs::read(&b).map_err(|e| e.to_string()).and_then(|d| Save::parse(&d).map(|_| d)).and_then(|d| std::fs::write(&f, d).map_err(|e| e.to_string()));
-                    match r {
-                        Ok(()) => {
-                            self.open(f.clone());
-                            self.msg(format!("Restored {}", b.file_name().unwrap().to_string_lossy()), false);
+                    ui.add_space(14.0);
+                    ui.horizontal(|ui| {
+                        if theme::text_btn(ui, "Cancel", ACCENT, false, true) {
+                            choice = 3;
                         }
-                        Err(e) => self.msg(format!("Restore failed: {e}"), true),
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if !running && theme::filled_btn(ui, "Save", theme::ACCENT_FILL) {
+                                choice = 1;
+                            }
+                            ui.add_space(6.0);
+                            if theme::text_btn(ui, "Don't Save", RED, false, true) {
+                                choice = 2;
+                            }
+                        });
+                    });
+                });
+            if m.should_close() && choice == 0 {
+                choice = 3;
+            }
+            match choice {
+                1 => {
+                    self.confirm = None;
+                    if self.write() {
+                        self.perform(p);
                     }
                 }
+                2 => {
+                    self.confirm = None;
+                    if let Some(s) = self.save.as_mut() {
+                        s.town.dirty = false;
+                        s.heroes.iter_mut().for_each(|h| h.data.dirty = false);
+                    }
+                    self.perform(p);
+                }
+                3 => self.confirm = None,
+                _ => {}
             }
         }
 
